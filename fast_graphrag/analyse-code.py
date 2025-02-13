@@ -524,7 +524,6 @@ def main():
         else:
             file_contents = gather_files(source_directory, extensions)
             extraction_prompt_file_name = "entity_relationship_extraction.jsonl"
-            glean_prompt_file_name = "entity_relationship_glean.jsonl"
             summarize_nodes_prompt_file_name = "summarize_nodes_description.jsonl"
             summarize_edges_prompt_file_name = "summarize_edges_description.jsonl"
 
@@ -536,17 +535,7 @@ def main():
             if not extract_output:
                 return
 
-            glean_output = jobs_manager.get_or_create(
-                "glean-extract",
-                glean_prompt_file_name,
-                callback=lambda: grag.prepare_batch_glean_prompt(
-                    chunks, base_path / glean_prompt_file_name, extract_output
-                ),
-            )
-            if not glean_output:
-                return
-
-            subgraphs = grag.batch_insert(chunks, extract_output, glean_output)
+            subgraphs = grag.batch_insert(chunks, extract_output)
             # TODO: handle updates to existing graph
             graphs = grag.batch_generate_graphs(subgraphs, chunks, Path(args.work_dir) / "graphs_cache.pkl")
 

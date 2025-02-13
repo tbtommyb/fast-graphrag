@@ -240,20 +240,18 @@ class BaseGraphRAG(Generic[GTEmbedding, GTHash, GTChunk, GTNode, GTEdge, GTId]):
         self,
         chunks: Iterable[Iterable[TChunk]],
         extraction_content: Union[str, List[str]],
-        gleaned_content: Union[str, List[str]],
         metadata: Union[List[Optional[Dict[str, Any]]], Optional[Dict[str, Any]]] = None,
         params: Optional[InsertParam] = None,
         show_progress: bool = True,
     ) -> List[asyncio.Future[Optional[BaseGraphStorage[TEntity, TRelation, GTId]]]]:
         return get_event_loop().run_until_complete(
-            self.async_batch_insert(chunks, extraction_content, gleaned_content, metadata, show_progress)
+            self.async_batch_insert(chunks, extraction_content, metadata, show_progress)
         )
 
     async def async_batch_insert(
         self,
         chunks: Iterable[Iterable[TChunk]],
         extraction_content: Union[str, List[str]],
-        gleaned_content: Union[str, List[str]],
         metadata: Union[List[Optional[Dict[str, Any]]], Optional[Dict[str, Any]]] = None,
         params: Optional[InsertParam] = None,
         show_progress: bool = True,
@@ -265,8 +263,6 @@ class BaseGraphRAG(Generic[GTEmbedding, GTHash, GTChunk, GTNode, GTEdge, GTId]):
             metadata = [metadata]
         if isinstance(extraction_content, str):
             extraction_content = [extraction_content]
-        if isinstance(gleaned_content, str):
-            gleaned_content = [gleaned_content]
 
         extract_prompt_responses = {}
         for line in extraction_content:
@@ -277,21 +273,11 @@ class BaseGraphRAG(Generic[GTEmbedding, GTHash, GTChunk, GTNode, GTEdge, GTId]):
             except Exception as e:
                 print(f"Failed to parse extraction response {data}. Exception {e}")
 
-        glean_prompt_responses = {}
-        for line in gleaned_content:
-            data = json.loads(line.strip())
-            try:
-                record = TBedrockBatchResponse.parse_obj(data)
-                glean_prompt_responses[record.recordId] = record
-            except Exception as e:
-                print(f"Failed to parse glean response {data}. Exception {e}")
-
         try:
             subgraphs = await self.batch_information_extraction_service.create_graphs(
                 llm=self.llm_service,
                 documents=chunks,
                 extracted_content=extract_prompt_responses,
-                gleaned_content=glean_prompt_responses,
                 entity_types=self.entity_types,
             )
 

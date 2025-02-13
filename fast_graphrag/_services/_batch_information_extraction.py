@@ -200,88 +200,11 @@ class BatchInformationExtractionService(BaseInformationExtractionService[TChunk,
                 return False
         return True
 
-    def prepare_batch_glean_prompt(
-        self,
-        documents: Iterable[Iterable[TChunk]],
-        output_path: Path,
-        extracted_content: Dict[str, TBedrockBatchOutput],
-        prompt_kwargs: Dict[str, str],
-        entity_types: List[str],
-    ) -> bool:
-        with open(
-            output_path,
-            "w",
-            encoding="utf-8",
-        ) as f:
-            try:
-                for document in documents:
-                    for chunk in document:
-                        global extract_count
-                        global extract_error_count
-                        extract_count += 1
-                        record_id = generate_stable_id(chunk.id)
-                        extraction_response = extracted_content.get(record_id)
-                        # TODO: log elements that don't pass validation
-                        if not extraction_response:
-                            print(f"prepare_batch_glean_prompt found no extraction_response for {record_id}")
-                            extract_error_count += 1
-                            continue
-
-                        messages = extraction_response.modelInput.messages
-                        data = extract_json_from_llm_response(extraction_response)
-                        # TODO: log elements that don't pass validation
-                        if not data:
-                            print(f"prepare_batch_glean_prompt found no json for {extraction_response}")
-                            extract_error_count += 1
-                            continue
-
-                        messages.append(
-                            TClaudeMessage(
-                                role="assistant",
-                                content=[TClaudeContentBlock(type="text", text=json.dumps(data))],
-                            )
-                        )
-
-                        prompt = format_and_write_prompt(
-                            prompt_key="entity_relationship_continue_extraction",
-                            format_kwargs={},
-                        )
-
-                        messages.append(
-                            TClaudeMessage(
-                                role="user",
-                                content=[TClaudeContentBlock(type="text", text=prompt)],
-                            )
-                        )
-
-                        f.write(
-                            TBedrockBatchRequest(
-                                recordId=record_id,
-                                modelInput=TBedrockBatchInput(
-                                    anthropic_version="bedrock-2023-05-31",
-                                    max_tokens=4096,
-                                    tool_choice={
-                                        "type": "tool",
-                                        "name": "extract_entity_relation",
-                                    },
-                                    tools=TOOLS,
-                                    messages=messages,
-                                ),
-                            ).model_dump_json()
-                            + "\n"
-                        )
-            except Exception as e:
-                print(f"Error generating batch_glean_prompt: {e}")
-                return False
-        print(f"Extraction error rate: {extract_error_count / extract_count}")
-        return True
-
     async def create_graphs(
         self,
         llm: BaseLLMService,
         documents: Iterable[Iterable[TChunk]],
         extracted_content: Dict[str, TBedrockBatchOutput],
-        gleaned_content: Dict[str, TBedrockBatchOutput],
         entity_types: List[str],
     ) -> List[asyncio.Future[Optional[BaseGraphStorage[TEntity, TRelation, GTId]]]]:
         _clean_entity_types = [re.sub("[ _]", "", entity_type).upper() for entity_type in entity_types]
@@ -293,11 +216,7 @@ class BatchInformationExtractionService(BaseInformationExtractionService[TChunk,
             for chunk in document:
                 global extract_count
                 global extract_error_count
-                global glean_error_count
-                global glean_count
-                global glean_error_count
                 extract_count += 1
-                glean_count += 1
                 record_id = generate_stable_id(chunk.id)
 
                 extraction_response = extracted_content.get(record_id)
@@ -335,39 +254,6 @@ class BatchInformationExtractionService(BaseInformationExtractionService[TChunk,
                     extract_error_count += 1
                 graph = TGraph(entities=entities, relationships=relationships)
 
-                glean_response = gleaned_content.get(record_id)
-                if not glean_response:
-                    print(f"create_graphs found no glean_response {record_id}")
-                    glean_error_count += 1
-                if glean_response:
-                    glean_data = extract_json_from_llm_response(glean_response)
-                    if not glean_data:
-                        print(f"create_graphs found no glean_data json {glean_data}")
-                        glean_error_count += 1
-                    if glean_data:
-                        entities = [
-                            TEntity(name=x["name"], type=x["type"], description=x["desc"])
-                            for x in glean_data.get("entities", [])
-                            if all(key in x for key in ["name", "type", "desc"])
-                        ]
-
-                        relationships = []
-                        gleaned_relationships = glean_data.get("relationships", [])
-                        gleaned_other_relationships = glean_data.get("other_relationships", [])
-                        if isinstance(gleaned_relationships, list) and isinstance(gleaned_other_relationships, list):
-                            relationships = [
-                                TRelation(
-                                    source=x["source"],
-                                    target=x["target"],
-                                    description=x["desc"],
-                                )
-                                for x in (gleaned_relationships + gleaned_other_relationships)
-                                if all(key in x for key in ["source", "target", "desc"])
-                            ]
-                        else:
-                            glean_error_count += 1
-                        graph.entities.extend(entities)
-                        graph.relationships.extend(relationships)
                 for entity in graph.entities:
                     if re.sub("[ _]", "", entity.type).upper() not in _clean_entity_types:
                         entity.type = "UNKNOWN"
@@ -376,8 +262,6 @@ class BatchInformationExtractionService(BaseInformationExtractionService[TChunk,
                 graphs.append(graph)
             list_of_merge_tasks.append(asyncio.create_task(self._merge(llm, graphs)))
 
-        print(f"Glean extract error rate: {extract_error_count / extract_count}")
-        print(f"Glean error rate: {glean_error_count / glean_count}")
         return list_of_merge_tasks
 
     async def _merge(self, llm: BaseLLMService, graphs: List[TGraph]) -> BaseGraphStorage[TEntity, TRelation, GTId]:
