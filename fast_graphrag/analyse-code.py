@@ -14,7 +14,7 @@ from typing import Union
 from fast_graphrag import GraphRAG
 from fast_graphrag._llm import OpenAIEmbeddingService, OpenAILLMService
 
-DOMAIN = "Analyze this TypeScript code and identify the components, functions, and their relationships."
+DOMAIN = "Analyze this TypeScript code and identify the components, functions, types and their relationships and functionality."
 
 EXAMPLE_QUERIES = [
     "What are the main components in this codebase?",
@@ -22,9 +22,25 @@ EXAMPLE_QUERIES = [
     "What are the key interfaces and types defined?",
     "Describe the main functionality of this codebase.",
     "What are the dependencies between different files?",
+    "What is the filepath where this entity is defined?",
+    "What does this component do?",
+    "How does this component work?",
 ]
 
-ENTITY_TYPES = ["Component", "Function", "Interface", "Type", "Variable", "Class"]
+ENTITY_TYPES = [
+    "Class",
+    "Component",
+    "Constant",
+    "Filepath",
+    "Function",
+    "Method",
+    "Interface",
+    "Property",
+    "Styling",
+    "Test",
+    "Type",
+    "Variable",
+]
 
 session = boto3.session.Session(profile_name="PROFILE_NAME")
 bedrock_client = session.client(service_name="bedrock", region_name="us-west-2")
@@ -53,7 +69,7 @@ def gather_files(directory_path, extensions):
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
-                file_content = f"// <filepath>{file_path}</filepath>\n{content}"
+                file_content = f"// <filepath>{file_path}</filepath>\n\n{content}"
                 output.append(file_content)
         except Exception as e:
             print(f"[gather_files] Error processing file {file_path}: {e}")
@@ -513,9 +529,9 @@ def main():
     base_path = Path(args.work_dir) / "batch_prompts"
     base_path.mkdir(parents=True, exist_ok=True)
 
-    jobs_manager = JobsManager(source_directory, args.work_dir, base_path, llm_config.model)
+    jobs_manager = JobsManager(source_directory, args.work_dir, base_path, llm_config["model"])
 
-    extensions = ["ts", "tsx", "json", "yaml", "md", "js"]
+    extensions = ["ts", "tsx", "md"]
     if args.build:
         print(f"Beginning {'batch ' if args.batch else ''}job for: {source_directory}")
 

@@ -45,7 +45,10 @@ class Workspace:
         for checkpoint in self.failed_checkpoints:
             old_path = os.path.join(self.working_dir, checkpoint)
             new_path = os.path.join(self.working_dir, f"0__err_{checkpoint}")
-            os.rename(old_path, new_path)
+            try:
+                os.rename(old_path, new_path)
+            except Exception as e:
+                logger.error(f"Did not find expected checkpoint path {old_path}: {e}")
 
         if self.keep_n > 0:
             checkpoints = sorted(
