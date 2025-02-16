@@ -42,6 +42,7 @@ class RepoMapper:
             "identifier",
             "property_identifier",
             "private_property_identifier",
+            "variable_declarator",
         }:
             return node.text.decode("utf-8")
 
@@ -118,6 +119,24 @@ class RepoMapper:
             return None
         self.seen.add(node)
 
+        def filter_scope_identifiers(identifiers, child_scopes):
+            """Filter out identifiers that belong to child scopes."""
+            child_identifiers = set()
+            for child in child_scopes:
+                # Add the child's name
+                if child.name:
+                    child_identifiers.add(child.name)
+                # Add all identifiers from the child scope
+                child_identifiers.update(name for name in child.identifiers)
+                # Recursively add identifiers from nested scopes
+                for nested_child in child.children:
+                    child_identifiers.update(
+                        self._get_all_child_identifiers(nested_child)
+                    )
+
+            # Filter out identifiers that appear in child scopes
+            return [name for name in identifiers if name not in child_identifiers]
+
         # List of node types that create named scopes
         scope_types = {
             "program": "file",
@@ -131,16 +150,21 @@ class RepoMapper:
             "module_declaration": "module",
         }
 
-        # Handle property assignment to arrow function
-        if node.type == "property_identifier":
+        if (
+            node.type == "property_identifier"
+            or node.type == "private_property_identifier"
+        ):
             next_sibling = node.next_sibling
             if next_sibling and next_sibling.type == "=":
                 next_next = next_sibling.next_sibling
                 if next_next and next_next.type == "arrow_function":
                     name = node.text.decode("utf-8")
-                    # Get identifiers from the arrow function body
                     identifiers, child_scopes = self._collect_identifiers(
                         next_next, source_bytes, filepath
+                    )
+
+                    filtered_identifiers = filter_scope_identifiers(
+                        identifiers, child_scopes
                     )
 
                     return Scope(
@@ -148,9 +172,38 @@ class RepoMapper:
                         name=name,
                         start_pos=node.start_byte,
                         end_pos=next_next.end_byte,
-                        identifiers=identifiers,
+                        identifiers=filtered_identifiers,
                         children=child_scopes,
                     )
+
+        # Handle variable declarations assigned to arrow functions
+        if node.type == "variable_declarator":
+            # Get the name from the declarator
+            name = None
+            arrow_function = None
+            for child in node.children:
+                if child.type == "identifier":
+                    name = child.text.decode("utf-8")
+                elif child.type == "arrow_function":
+                    arrow_function = child
+
+            if name and arrow_function:
+                identifiers, child_scopes = self._collect_identifiers(
+                    arrow_function, source_bytes, filepath
+                )
+
+                filtered_identifiers = filter_scope_identifiers(
+                    identifiers, child_scopes
+                )
+
+                return Scope(
+                    kind="function",
+                    name=name,
+                    start_pos=node.start_byte,
+                    end_pos=arrow_function.end_byte,
+                    identifiers=filtered_identifiers,
+                    children=child_scopes,
+                )
 
         # Only create scopes for named declarations
         scope_kind = scope_types.get(node.type)
@@ -171,22 +224,7 @@ class RepoMapper:
             node, source_bytes, filepath
         )
 
-        # Remove identifiers that belong to child scopes
-        child_identifiers = set()
-        for child in child_scopes:
-            # Add the child's name
-            if child.name:
-                child_identifiers.add(child.name)
-            # Add all identifiers from the child scope
-            child_identifiers.update(name for name in child.identifiers)
-            # Recursively add identifiers from nested scopes
-            for nested_child in child.children:
-                child_identifiers.update(self._get_all_child_identifiers(nested_child))
-
-        # Filter out identifiers that appear in child scopes
-        filtered_identifiers = [
-            name for name in identifiers if name not in child_identifiers
-        ]
+        filtered_identifiers = filter_scope_identifiers(identifiers, child_scopes)
 
         return Scope(
             kind=scope_kind,
