@@ -37,39 +37,64 @@ class RepoMapper:
 
     def _get_identifier_name(self, node: Any) -> Optional[str]:
         """Extract identifier name from a node."""
-        # First check for direct identifier
-        if node.type == "identifier":
+        # Direct identifier types
+        if node.type in {
+            "identifier",
+            "property_identifier",
+            "private_property_identifier",
+        }:
             return node.text.decode("utf-8")
+
+        # For property assignments that are functions
+        if node.type == "property_identifier":
+            # Check if this is a property being assigned to a function
+            next_sibling = node.next_sibling
+            if next_sibling and next_sibling.type == "=":
+                next_next = next_sibling.next_sibling
+                if next_next and next_next.type in {"arrow_function", "function"}:
+                    return node.text.decode("utf-8")
 
         # For declarations, look for specific name patterns
         for child in node.children:
-            # Most declarations have a name identifier as direct child
-            if child.type == "identifier":
-                return child.text.decode("utf-8")
-
-            # Class/interface/type names can be nested in type_identifier
-            if child.type == "type_identifier":
-                return child.text.decode("utf-8")
-
-            # Function declarations may have name in nested property_identifier
-            if child.type == "property_identifier":
-                return child.text.decode("utf-8")
-
-            # Method definitions have name in property_identifier
-            if child.type == "property_identifier":
+            if child.type in {
+                "identifier",
+                "property_identifier",
+                "private_property_identifier",
+                "type_identifier",
+            }:
                 return child.text.decode("utf-8")
 
         return None
 
     def _collect_identifiers(
         self, node: Any, source_bytes: bytes, filepath: str
-    ) -> tuple[str, int]:
+    ) -> tuple[list[tuple[str, int]], list[Scope]]:
         """Collect unique identifiers and their positions in current scope."""
         identifiers = set()
         scopes = []
 
         def visit(node):
-            if node.type == "identifier":
+            # Handle interface property declarations
+            if node.type == "property_signature":
+                # Get the property name
+                for child in node.children:
+                    if child.type in {"identifier", "property_identifier"}:
+                        identifiers.add(child.text.decode("utf-8"))
+                    # Get the type reference if it exists
+                    elif child.type == "type_annotation":
+                        for type_child in child.children:
+                            if type_child.type == "type_identifier":
+                                identifiers.add(type_child.text.decode("utf-8"))
+
+            # Handle this.property references
+            elif node.type == "member_expression":
+                if node.children[0].type == "this":
+                    prop = node.children[2]  # Get the property name after 'this.'
+                    if prop.type in {"identifier", "property_identifier"}:
+                        identifiers.add(prop.text.decode("utf-8"))
+                    return
+
+            elif node.type == "identifier":
                 name = node.text.decode("utf-8")
                 identifiers.add(name)
                 return
@@ -77,9 +102,8 @@ class RepoMapper:
             # Check if this node creates a new scope
             if scope := self._build_scope_tree(node, source_bytes, filepath):
                 scopes.append(scope)
-                return  # Stop collecting identifiers inside this scope
 
-            # Otherwise continue traversing
+            # Continue traversing
             for child in node.children:
                 visit(child)
 
@@ -103,18 +127,39 @@ class RepoMapper:
             "enum_declaration": "enum",
             "function_declaration": "function",
             "method_definition": "method",
-            "arrow_function": "function",
             "namespace_declaration": "namespace",
             "module_declaration": "module",
         }
 
+        # Handle property assignment to arrow function
+        if node.type == "property_identifier":
+            next_sibling = node.next_sibling
+            if next_sibling and next_sibling.type == "=":
+                next_next = next_sibling.next_sibling
+                if next_next and next_next.type == "arrow_function":
+                    name = node.text.decode("utf-8")
+                    # Get identifiers from the arrow function body
+                    identifiers, child_scopes = self._collect_identifiers(
+                        next_next, source_bytes, filepath
+                    )
+
+                    return Scope(
+                        kind="method",
+                        name=name,
+                        start_pos=node.start_byte,
+                        end_pos=next_next.end_byte,
+                        identifiers=identifiers,
+                        children=child_scopes,
+                    )
+
+        # Only create scopes for named declarations
         scope_kind = scope_types.get(node.type)
         if not scope_kind:
             return None
 
         # Get name if this is a named declaration
         name = self._get_identifier_name(node)
-        if not name and scope_kind != "file":
+        if not name and node.type != "program" and node.type != "source_file":
             return None
 
         # For file scope, use filepath as name
@@ -126,14 +171,41 @@ class RepoMapper:
             node, source_bytes, filepath
         )
 
+        # Remove identifiers that belong to child scopes
+        child_identifiers = set()
+        for child in child_scopes:
+            # Add the child's name
+            if child.name:
+                child_identifiers.add(child.name)
+            # Add all identifiers from the child scope
+            child_identifiers.update(name for name in child.identifiers)
+            # Recursively add identifiers from nested scopes
+            for nested_child in child.children:
+                child_identifiers.update(self._get_all_child_identifiers(nested_child))
+
+        # Filter out identifiers that appear in child scopes
+        filtered_identifiers = [
+            name for name in identifiers if name not in child_identifiers
+        ]
+
         return Scope(
             kind=scope_kind,
             name=name,
             start_pos=node.start_byte,
             end_pos=node.end_byte,
-            identifiers=identifiers,
+            identifiers=filtered_identifiers,
             children=child_scopes,
         )
+
+    def _get_all_child_identifiers(self, scope: Scope) -> set[str]:
+        """Recursively get all identifiers from a scope and its children."""
+        identifiers = set()
+        if scope.name:
+            identifiers.add(scope.name)
+        identifiers.update(name for name in scope.identifiers)
+        for child in scope.children:
+            identifiers.update(self._get_all_child_identifiers(child))
+        return identifiers
 
     def generate_map(self, file_path: str) -> Optional[Scope]:
         """Generate a scope map for a given file."""
