@@ -16,7 +16,7 @@ Currently `analyse-code.py` is written assuming that you have an `ada` profile c
 
 Note that in `analyse-code.py` we need to provide API endponts to access embedding and chat LLMs. You will need to have enabled access to these LLMs in your account's Bedrock profile.
 
-You can use the package [`bedrock-access-gateway`](https://github.com/aws-samples/bedrock-access-gateway) to proxy requests from an OpenAI-compatible API endpoint to the Bedrock CDK. (Note: I have a patched version that includes support for Anthropic's tool use so that the Anthropic LLM client can generate structured output. I will upload it to a separate repo and link).
+You can use the package [`bedrock-access-gateway`](https://github.com/aws-samples/bedrock-access-gateway) to proxy requests from an OpenAI-compatible API endpoint to the Bedrock CDK. (Note: I have a [patched version here](https://code.amazon.com/packages/AnthropicBedrockAccessGateway/trees/heads/anthropic) that includes support for Anthropic's tool use so that the Anthropic LLM client can generate structured output).
 
 ```
 export S3_BUCKET="bedrock-data-source-tomjhnsn" # the S3 bucket that batch prompts will be written to
