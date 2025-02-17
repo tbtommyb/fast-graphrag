@@ -9,6 +9,7 @@ import time
 import argparse
 from pathlib import Path
 
+from fast_graphrag.file_map import FileMapper
 from typing import Union
 
 from fast_graphrag import GraphRAG
@@ -56,10 +57,13 @@ BEDROCK_BATCH_MIN_PROMPTS = 100
 BEDROCK_BATCH_SIZE = 5000
 BEDROCK_BATCH_MAX_PROMPTS = 50000
 
+BASE_DIR = os.environ["BASE_DIR"]
+
 
 # TODO: handle multiple input paths
-def gather_files(directory_path, extensions):
+def gather_files(directory_path, extensions, chunk_size=3600):
     output = []
+    mapper = FileMapper()
     files = sum(
         [glob.glob(os.path.join(directory_path, f"**/*.{ext}"), recursive=True) for ext in extensions],
         [],
@@ -69,15 +73,26 @@ def gather_files(directory_path, extensions):
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
-                file_content = f"// <filepath>{file_path}</filepath>\n\n{content}"
-                output.append(file_content)
+                if file_path.endswith((".ts", ".tsx")) and len(content) > chunk_size:
+                    abs_path = os.path.abspath(file_path)
+                    base_dir_idx = abs_path.find(BASE_DIR)
+
+                    if base_dir_idx != -1:
+                        rel_path = abs_path[base_dir_idx + len(BASE_DIR) :].lstrip(os.sep)
+                    else:
+                        rel_path = os.path.relpath(file_path, directory_path)
+
+                    scope_tree = mapper.generate_map(file_path, rel_path)
+                    if scope_tree:
+                        map_chunks = mapper.format_scope_chunks(scope_tree)
+                        output.extend(map_chunks)
+                output.append(content)
         except Exception as e:
             print(f"[gather_files] Error processing file {file_path}: {e}")
 
     return output
 
 
-# TODO: batch this
 def insert_files(directory_path, extensions, grag, max_retries=3, backoff_base=2):
     files = sum(
         [glob.glob(os.path.join(directory_path, f"**/*.{ext}"), recursive=True) for ext in extensions],
@@ -538,7 +553,11 @@ def main():
         if not args.batch:
             insert_files(source_directory, extensions, grag)
         else:
-            file_contents = gather_files(source_directory, extensions)
+            file_contents = gather_files(
+                source_directory,
+                extensions,
+                chunk_size=grag.chunking_service._chunk_size,
+            )
             extraction_prompt_file_name = "entity_relationship_extraction.jsonl"
             summarize_nodes_prompt_file_name = "summarize_nodes_description.jsonl"
             summarize_edges_prompt_file_name = "summarize_edges_description.jsonl"

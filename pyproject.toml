@@ -62,4 +62,4 @@ convention = "google"
 [tool.poetry.scripts]
 test-app = "fast_graphrag.test:start"
 analyse-code = "fast_graphrag.analyse-code:main"
-repo-map = "fast_graphrag.repo-map:main"
+file-map = "fast_graphrag.file_map:main"

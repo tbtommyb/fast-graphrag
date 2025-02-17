@@ -5,6 +5,7 @@ from collections import namedtuple
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from pathlib import Path
+import argparse
 
 TS_LANGUAGE = Language(tsts.language_typescript())
 TSX_LANGUAGE = Language(tsts.language_tsx())
@@ -23,8 +24,33 @@ class Scope:
 
 Tag = namedtuple("Tag", "rel_fname fname line name kind".split())
 
+FILEMAP_DESC = """
+/**
+This is a hierarchical map of a TypeScript/JavaScript source file showing its structure and identifier usage.
+Each scope is represented as:
 
-class RepoMapper:
+{kind} {name} {
+  identifiers = [ list of identifiers used directly in this scope ]
+  ... nested child scopes ...
+}
+
+Kinds of scopes:
+- file: Top-level file scope
+- class: Class declaration
+- interface: Interface declaration
+- function: Function declaration or variable assigned to function
+- method: Class method or property assigned to function
+- enum: Enum declaration
+- namespace: Namespace declaration
+- module: Module declaration
+- type: Type alias declaration
+
+Identifiers are listed in the most specific scope where they are used. If an identifier appears in a child scope, it will not be listed in the parent scope.
+**/
+"""
+
+
+class FileMapper:
     def __init__(self):
         self.ts_parser = Parser(TS_LANGUAGE)
         self.tsx_parser = Parser(TSX_LANGUAGE)
@@ -75,6 +101,16 @@ class RepoMapper:
         scopes = []
 
         def visit(node):
+            if node.type == "type_identifier":
+                identifiers.add(node.text.decode("utf-8"))
+                return
+
+            if node.type == "generic_type":
+                for child in node.children:
+                    if child.type in {"type_identifier", "identifier"}:
+                        identifiers.add(child.text.decode("utf-8"))
+                return
+
             # Handle interface property declarations
             if node.type == "property_signature":
                 # Get the property name
@@ -111,9 +147,7 @@ class RepoMapper:
         visit(node)
         return list(identifiers), scopes
 
-    def _build_scope_tree(
-        self, node: Any, source_bytes: bytes, filepath: str
-    ) -> Optional[Scope]:
+    def _build_scope_tree(self, node: Any, source_bytes: bytes, filepath: str) -> Optional[Scope]:
         """Build scope tree focusing only on named declarations."""
         if node in self.seen:
             return None
@@ -130,9 +164,7 @@ class RepoMapper:
                 child_identifiers.update(name for name in child.identifiers)
                 # Recursively add identifiers from nested scopes
                 for nested_child in child.children:
-                    child_identifiers.update(
-                        self._get_all_child_identifiers(nested_child)
-                    )
+                    child_identifiers.update(self._get_all_child_identifiers(nested_child))
 
             # Filter out identifiers that appear in child scopes
             return [name for name in identifiers if name not in child_identifiers]
@@ -148,24 +180,18 @@ class RepoMapper:
             "method_definition": "method",
             "namespace_declaration": "namespace",
             "module_declaration": "module",
+            "type_alias_declaration": "type",
         }
 
-        if (
-            node.type == "property_identifier"
-            or node.type == "private_property_identifier"
-        ):
+        if node.type == "property_identifier" or node.type == "private_property_identifier":
             next_sibling = node.next_sibling
             if next_sibling and next_sibling.type == "=":
                 next_next = next_sibling.next_sibling
                 if next_next and next_next.type == "arrow_function":
                     name = node.text.decode("utf-8")
-                    identifiers, child_scopes = self._collect_identifiers(
-                        next_next, source_bytes, filepath
-                    )
+                    identifiers, child_scopes = self._collect_identifiers(next_next, source_bytes, filepath)
 
-                    filtered_identifiers = filter_scope_identifiers(
-                        identifiers, child_scopes
-                    )
+                    filtered_identifiers = filter_scope_identifiers(identifiers, child_scopes)
 
                     return Scope(
                         kind="method",
@@ -188,13 +214,9 @@ class RepoMapper:
                     arrow_function = child
 
             if name and arrow_function:
-                identifiers, child_scopes = self._collect_identifiers(
-                    arrow_function, source_bytes, filepath
-                )
+                identifiers, child_scopes = self._collect_identifiers(arrow_function, source_bytes, filepath)
 
-                filtered_identifiers = filter_scope_identifiers(
-                    identifiers, child_scopes
-                )
+                filtered_identifiers = filter_scope_identifiers(identifiers, child_scopes)
 
                 return Scope(
                     kind="function",
@@ -220,9 +242,7 @@ class RepoMapper:
             name = filepath
 
         # Collect identifiers and child scopes
-        identifiers, child_scopes = self._collect_identifiers(
-            node, source_bytes, filepath
-        )
+        identifiers, child_scopes = self._collect_identifiers(node, source_bytes, filepath)
 
         filtered_identifiers = filter_scope_identifiers(identifiers, child_scopes)
 
@@ -245,7 +265,7 @@ class RepoMapper:
             identifiers.update(self._get_all_child_identifiers(child))
         return identifiers
 
-    def generate_map(self, file_path: str) -> Optional[Scope]:
+    def generate_map(self, file_path: str, relative_file_path: str) -> Optional[Scope]:
         """Generate a scope map for a given file."""
         if not os.path.exists(file_path):
             return None
@@ -255,92 +275,119 @@ class RepoMapper:
 
         ext = Path(file_path).suffix
         parser = self.ts_parser if ext == ".ts" else self.tsx_parser
-        # language = TS_LANGUAGE if ext == ".ts" else TSX_LANGUAGE
 
-        # query_scm = Path("grammars/typescript-tags.scm").read_text()
         tree = parser.parse(source_bytes)
-        # query = language.query(query_scm)
-        # captures = query.captures(tree.root_node)
-        # saw = set()
-        # all_nodes = list(captures)
+        return self._build_scope_tree(tree.root_node, source_bytes, relative_file_path)
 
-        # for node, tag in all_nodes:
-        #     if tag.startswith("name.definition."):
-        #         kind = "def"
-        #     elif tag.startswith("name.reference."):
-        #         kind = "ref"
-        #     else:
-        #         continue
+    def format_scope_chunks(self, scope: Scope, char_limit: int = 3600) -> list[str]:
+        """Format scope tree as a list of chunks, each under char_limit."""
+        chunks = []
+        current_chunk = []
+        current_length = 0
+        open_scopes = []  # Stack of (scope, indent_level) tuples
 
-        #     saw.add(kind)
+        def add_to_chunk(line: str, indent: int):
+            nonlocal current_length, current_chunk
+            current_length += len(line) + 1  # +1 for newline
+            current_chunk.append(("  " * indent) + line)
 
-        #     result = Tag(
-        #         rel_fname=file_path,
-        #         fname=file_path,
-        #         name=node.text.decode("utf-8"),
-        #         kind=kind,
-        #         line=node.start_point[0],
-        #     )
+        def flush_chunk():
+            nonlocal current_chunk, current_length
+            if current_chunk:
+                # Close all open scopes
+                for _ in range(len(open_scopes)):
+                    add_to_chunk("}", open_scopes[-1][1])
 
-        #     yield result
+                chunk_text = FILEMAP_DESC + "\n" + "\n".join(current_chunk)
+                chunks.append(chunk_text)
 
-        # if "ref" in saw:
-        #     return
-        # if "def" not in saw:
-        #     return
+                # Start new chunk with reopened scopes
+                current_chunk = []
+                current_length = len(FILEMAP_DESC) + 1
 
-        # # We saw defs, without any refs
-        # # Some tags files only provide defs (cpp, for example)
-        # # Use pygments to backfill refs
+                # Reopen all scopes that were open
+                for scope, indent in open_scopes:
+                    if scope.kind == "file":
+                        line = f"File({scope.name}) {{"
+                    else:
+                        line = f"{scope.kind} {scope.name} {{"
+                    add_to_chunk(line, indent)
 
-        # try:
-        #     lexer = guess_lexer_for_filename(fname, code)
-        # except Exception:  # On Windows, bad ref to time.clock which is deprecated?
-        #     # self.io.tool_error(f"Error lexing {fname}")
-        #     return
+        def format_scope_recursive(scope: Scope, indent: int):
+            nonlocal current_length, current_chunk, open_scopes
 
-        # tokens = list(lexer.get_tokens(code))
-        # tokens = [token[1] for token in tokens if token[0] in Token.Name]
+            # Check if adding this scope would exceed limit
+            estimated_scope_size = 100  # Base size for scope declaration
+            if scope.identifiers:
+                estimated_scope_size += len(", ".join(scope.identifiers)) + 20
 
-        # for token in tokens:
-        #     yield Tag(
-        #         rel_fname=rel_fname,
-        #         fname=fname,
-        #         name=token,
-        #         kind="ref",
-        #         line=-1,
-        #     )
-        return self._build_scope_tree(tree.root_node, source_bytes, file_path)
+            # If adding this would exceed limit, flush chunk
+            if current_length + estimated_scope_size > char_limit:
+                flush_chunk()
 
-    def format_scope(self, scope: Scope, indent: int = 0) -> str:
-        """Format scope tree as string."""
-        result = []
-        indent_str = "  " * indent
+            # Add scope opening
+            if scope.kind == "file":
+                add_to_chunk(f"File({scope.name}) {{", indent)
+            else:
+                add_to_chunk(f"{scope.kind} {scope.name} {{", indent)
 
-        if scope.kind == "file":
-            result.append(f"{indent_str}File({scope.name}) {{")
-        else:
-            result.append(f"{indent_str}{scope.kind} {scope.name} {{")
+            open_scopes.append((scope, indent))
 
-        if scope.identifiers:
-            result.append(f"{indent_str}  identifiers = [")
-            result.append(f'{indent_str}    {", ".join(scope.identifiers)}')
-            result.append(f"{indent_str}  ]")
+            # Add identifiers
+            if scope.identifiers:
+                add_to_chunk("identifiers = [", indent + 1)
 
-        for child in scope.children:
-            result.append(self.format_scope(child, indent + 1))
+                # Split identifiers if needed
+                identifiers = scope.identifiers
+                while identifiers:
+                    # Calculate how many identifiers we can fit
+                    current_line = ", ".join(identifiers)
+                    if current_length + len(current_line) + 20 > char_limit:
+                        # Find break point
+                        for i in range(len(identifiers)):
+                            partial_line = ", ".join(identifiers[:i])
+                            if current_length + len(partial_line) + 20 > char_limit:
+                                if i > 0:
+                                    add_to_chunk(partial_line, indent + 2)
+                                    identifiers = identifiers[i:]
+                                    flush_chunk()
+                                break
+                    else:
+                        add_to_chunk(current_line, indent + 2)
+                        identifiers = []
 
-        result.append(f"{indent_str}}}")
-        return "\n".join(result)
+                add_to_chunk("]", indent + 1)
+
+            # Process children
+            for child in scope.children:
+                format_scope_recursive(child, indent + 1)
+
+            # Close scope
+            open_scopes.pop()
+            add_to_chunk("}", indent)
+
+        # Start formatting
+        format_scope_recursive(scope, 0)
+
+        # Flush final chunk
+        if current_chunk:
+            chunks.append(FILEMAP_DESC + "\n" + "\n".join(current_chunk))
+
+        return chunks
+
+    def format_scope(self, scope: Scope, char_limit: int = 3600) -> str:
+        """Format scope tree as string, breaking into chunks if needed."""
+        chunks = self.format_scope_chunks(scope, char_limit)
+        return "\n\n=== CHUNK BREAK ===\n\n".join(chunks)
 
 
 def main():
-    # Initialize mapper
-    mapper = RepoMapper()
+    mapper = FileMapper()
+    parser = argparse.ArgumentParser(description="Extract condensed filemap from TS/TSX file")
+    parser.add_argument("--path", required=True, type=str, help="File to analyse")
+    args = parser.parse_args()
 
-    # Example usage
-    file_path = "/Users/tomjhnsn/workplace/avlrc-dev/src/AVLivingRoomClient/packages/details/ui/components/DetailsPage.tsx"
-    scope_tree = mapper.generate_map(file_path)
+    scope_tree = mapper.generate_map(args.path, args.path)
     if scope_tree:
         print(mapper.format_scope(scope_tree))
 
