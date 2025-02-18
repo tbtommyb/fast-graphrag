@@ -15,7 +15,10 @@ from typing import Union
 from fast_graphrag import GraphRAG
 from fast_graphrag._llm import OpenAIEmbeddingService, OpenAILLMService
 
-DOMAIN = "Analyze this TypeScript code and identify the components, functions, types and their relationships and functionality."
+DOMAIN = """
+Analyze these filemaps and TypeScript code to identify the components, functions, types and their relationships and functionality.
+Filemaps start with "<filemap>" and give an overview of the hierarchical structure of a file showing which identifiers are in which named scope.
+"""
 
 EXAMPLE_QUERIES = [
     "What are the main components in this codebase?",
@@ -35,6 +38,7 @@ ENTITY_TYPES = [
     "Filepath",
     "Function",
     "Method",
+    "Identifier",
     "Interface",
     "Property",
     "Styling",
@@ -82,10 +86,13 @@ def gather_files(directory_path, extensions, chunk_size=3600):
                     else:
                         rel_path = os.path.relpath(file_path, directory_path)
 
-                    scope_tree = mapper.generate_map(file_path, rel_path)
-                    if scope_tree:
-                        map_chunks = mapper.format_scope_chunks(scope_tree)
-                        output.extend(map_chunks)
+                    filemap = mapper.generate_map(file_path, rel_path)
+                    if filemap:
+                        filemap_chunks = mapper.format_scope_chunks(
+                            filemap,
+                            chunk_size - 600,  # hardcode 600 to work around ineffective chunking
+                        )
+                        output.extend(filemap_chunks)
                 output.append(content)
         except Exception as e:
             print(f"[gather_files] Error processing file {file_path}: {e}")
@@ -297,6 +304,9 @@ def create_bedrock_jobs(base_path: Path, file_name: str, job_name: str, model_id
     extension = name_parts[1] if len(name_parts) > 1 else ""
 
     for i, batch in enumerate(batches):
+        if len(batch) < 100:
+            print(f"ERROR: batch file {base_name} has fewer than 100 entries. Bedrock will reject")
+            raise Exception
         if len(batches) > 1:
             batch_file_name = f"{base_name}.batch{i}.{extension}"
             batch_path = base_path / batch_file_name

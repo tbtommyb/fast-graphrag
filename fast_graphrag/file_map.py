@@ -25,28 +25,7 @@ class Scope:
 Tag = namedtuple("Tag", "rel_fname fname line name kind".split())
 
 FILEMAP_DESC = """
-/**
-This is a hierarchical map of a TypeScript/JavaScript source file showing its structure and identifier usage.
-Each scope is represented as:
-
-{kind} {name} {
-  identifiers = [ list of identifiers used directly in this scope ]
-  ... nested child scopes ...
-}
-
-Kinds of scopes:
-- file: Top-level file scope
-- class: Class declaration
-- interface: Interface declaration
-- function: Function declaration or variable assigned to function
-- method: Class method or property assigned to function
-- enum: Enum declaration
-- namespace: Namespace declaration
-- module: Module declaration
-- type: Type alias declaration
-
-Identifiers are listed in the most specific scope where they are used. If an identifier appears in a child scope, it will not be listed in the parent scope.
-**/
+<filemap>
 """
 
 
@@ -145,7 +124,7 @@ class FileMapper:
                 visit(child)
 
         visit(node)
-        return list(identifiers), scopes
+        return sorted(identifiers), scopes
 
     def _build_scope_tree(self, node: Any, source_bytes: bytes, filepath: str) -> Optional[Scope]:
         """Build scope tree focusing only on named declarations."""
@@ -308,7 +287,7 @@ class FileMapper:
                 # Reopen all scopes that were open
                 for scope, indent in open_scopes:
                     if scope.kind == "file":
-                        line = f"File({scope.name}) {{"
+                        line = f"Filepath({scope.name}) {{"
                     else:
                         line = f"{scope.kind} {scope.name} {{"
                     add_to_chunk(line, indent)
@@ -319,7 +298,7 @@ class FileMapper:
             # Check if adding this scope would exceed limit
             estimated_scope_size = 100  # Base size for scope declaration
             if scope.identifiers:
-                estimated_scope_size += len(", ".join(scope.identifiers)) + 20
+                estimated_scope_size += len(", ".join(scope.identifiers)) + 100
 
             # If adding this would exceed limit, flush chunk
             if current_length + estimated_scope_size > char_limit:
@@ -327,7 +306,7 @@ class FileMapper:
 
             # Add scope opening
             if scope.kind == "file":
-                add_to_chunk(f"File({scope.name}) {{", indent)
+                add_to_chunk(f"Filepath({scope.name}) {{", indent)
             else:
                 add_to_chunk(f"{scope.kind} {scope.name} {{", indent)
 
@@ -342,11 +321,11 @@ class FileMapper:
                 while identifiers:
                     # Calculate how many identifiers we can fit
                     current_line = ", ".join(identifiers)
-                    if current_length + len(current_line) + 20 > char_limit:
+                    if current_length + len(current_line) + 100 > char_limit:
                         # Find break point
                         for i in range(len(identifiers)):
                             partial_line = ", ".join(identifiers[:i])
-                            if current_length + len(partial_line) + 20 > char_limit:
+                            if current_length + len(partial_line) + 100 > char_limit:
                                 if i > 0:
                                     add_to_chunk(partial_line, indent + 2)
                                     identifiers = identifiers[i:]

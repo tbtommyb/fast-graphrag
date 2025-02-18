@@ -51,15 +51,16 @@ def generate_stable_id(chunk_index: int = 0) -> str:
     Uses SHA-256 hash encoded in base36, truncated or padded to exactly 11 characters.
     """
     input_string = f"{chunk_index}"
-    hash_object = hashlib.sha256(input_string.encode())
-    # Convert the entire hash to an integer
-    n = int.from_bytes(hash_object.digest(), byteorder="big")
-    # Convert to base36 (alphanumeric, case-insensitive)
-    base36 = np.base_repr(n, 36)
-    # Take first 11 characters if longer, or pad with zeros if shorter
-    if len(base36) > 11:
-        return base36[:11]
-    return base36.zfill(11)
+    return input_string[:11]
+    # hash_object = hashlib.sha256(input_string.encode())
+    # # Convert the entire hash to an integer
+    # n = int.from_bytes(hash_object.digest(), byteorder="big")
+    # # Convert to base36 (alphanumeric, case-insensitive)
+    # base36 = np.base_repr(n, 36)
+    # # Take first 11 characters if longer, or pad with zeros if shorter
+    # if len(base36) > 11:
+    #     return base36[:11]
+    # return base36.zfill(11)
 
 
 def extract_json_from_llm_response(response: TBedrockBatchResponse):
