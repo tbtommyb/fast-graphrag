@@ -153,7 +153,9 @@ class BaseGraphRAG(Generic[GTEmbedding, GTHash, GTChunk, GTNode, GTEdge, GTId]):
             chunked_documents = await self.chunking_service.extract(data=data)
 
             # Filter the chunks checking for duplicates
-            new_chunks_per_data = await self.state_manager.filter_new_chunks(chunks_per_data=chunked_documents)
+            # new_chunks_per_data = await self.state_manager.filter_new_chunks(
+            #     chunks_per_data=chunked_documents
+            # )
             new_chunks_per_data = chunked_documents
 
             return (

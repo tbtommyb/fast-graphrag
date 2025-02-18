@@ -9,12 +9,16 @@ import time
 import argparse
 from pathlib import Path
 
+from fast_graphrag.file_map import FileMapper
 from typing import Union
 
 from fast_graphrag import GraphRAG
 from fast_graphrag._llm import OpenAIEmbeddingService, OpenAILLMService
 
-DOMAIN = "Analyze this TypeScript code and identify the components, functions, types and their relationships and functionality."
+DOMAIN = """
+Analyze these filemaps and TypeScript code to identify the components, functions, types and their relationships and functionality.
+Filemaps start with "<filemap>" and give an overview of the hierarchical structure of a file showing which identifiers are in which named scope.
+"""
 
 EXAMPLE_QUERIES = [
     "What are the main components in this codebase?",
@@ -34,6 +38,7 @@ ENTITY_TYPES = [
     "Filepath",
     "Function",
     "Method",
+    "Identifier",
     "Interface",
     "Property",
     "Styling",
@@ -56,10 +61,13 @@ BEDROCK_BATCH_MIN_PROMPTS = 100
 BEDROCK_BATCH_SIZE = 5000
 BEDROCK_BATCH_MAX_PROMPTS = 50000
 
+BASE_DIR = os.environ["BASE_DIR"]
+
 
 # TODO: handle multiple input paths
-def gather_files(directory_path, extensions):
+def gather_files(directory_path, extensions, chunk_size=3600):
     output = []
+    mapper = FileMapper()
     files = sum(
         [glob.glob(os.path.join(directory_path, f"**/*.{ext}"), recursive=True) for ext in extensions],
         [],
@@ -69,15 +77,29 @@ def gather_files(directory_path, extensions):
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
-                file_content = f"// <filepath>{file_path}</filepath>\n\n{content}"
-                output.append(file_content)
+                if file_path.endswith((".ts", ".tsx")) and len(content) > chunk_size:
+                    abs_path = os.path.abspath(file_path)
+                    base_dir_idx = abs_path.find(BASE_DIR)
+
+                    if base_dir_idx != -1:
+                        rel_path = abs_path[base_dir_idx + len(BASE_DIR) :].lstrip(os.sep)
+                    else:
+                        rel_path = os.path.relpath(file_path, directory_path)
+
+                    filemap = mapper.generate_map(file_path, rel_path)
+                    if filemap:
+                        filemap_chunks = mapper.format_scope_chunks(
+                            filemap,
+                            chunk_size - 600,  # hardcode 600 to work around ineffective chunking
+                        )
+                        output.extend(filemap_chunks)
+                output.append(content)
         except Exception as e:
             print(f"[gather_files] Error processing file {file_path}: {e}")
 
     return output
 
 
-# TODO: batch this
 def insert_files(directory_path, extensions, grag, max_retries=3, backoff_base=2):
     files = sum(
         [glob.glob(os.path.join(directory_path, f"**/*.{ext}"), recursive=True) for ext in extensions],
@@ -282,6 +304,9 @@ def create_bedrock_jobs(base_path: Path, file_name: str, job_name: str, model_id
     extension = name_parts[1] if len(name_parts) > 1 else ""
 
     for i, batch in enumerate(batches):
+        if len(batch) < 100:
+            print(f"ERROR: batch file {base_name} has fewer than 100 entries. Bedrock will reject")
+            raise Exception
         if len(batches) > 1:
             batch_file_name = f"{base_name}.batch{i}.{extension}"
             batch_path = base_path / batch_file_name
@@ -538,7 +563,11 @@ def main():
         if not args.batch:
             insert_files(source_directory, extensions, grag)
         else:
-            file_contents = gather_files(source_directory, extensions)
+            file_contents = gather_files(
+                source_directory,
+                extensions,
+                chunk_size=grag.chunking_service._chunk_size,
+            )
             extraction_prompt_file_name = "entity_relationship_extraction.jsonl"
             summarize_nodes_prompt_file_name = "summarize_nodes_description.jsonl"
             summarize_edges_prompt_file_name = "summarize_edges_description.jsonl"

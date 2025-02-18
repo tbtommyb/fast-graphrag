@@ -21,6 +21,9 @@ hnswlib = "^0.8.0"
 instructor = {extras = ["anthropic"], version = "^1.7.2"}
 requests = "^2.32.3"
 python-dotenv = "^1.0.1"
+tree-sitter = "^0.24.0"
+tree-sitter-typescript = "^0.23.2"
+tree-sitter-rust = "^0.23.2"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -59,3 +62,4 @@ convention = "google"
 [tool.poetry.scripts]
 test-app = "fast_graphrag.test:start"
 analyse-code = "fast_graphrag.analyse-code:main"
+file-map = "fast_graphrag.file_map:main"
