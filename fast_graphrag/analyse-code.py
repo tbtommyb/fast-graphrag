@@ -9,6 +9,11 @@ import time
 import argparse
 from pathlib import Path
 
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import uvicorn
+import os
+
 from fast_graphrag.file_map import FileMapper
 from typing import Union
 
@@ -51,11 +56,11 @@ session = boto3.session.Session(profile_name="PROFILE_NAME")
 bedrock_client = session.client(service_name="bedrock", region_name="us-west-2")
 s3_client = session.client(service_name="s3", region_name="us-west-2")
 
-S3_BUCKET = os.environ["S3_BUCKET"]
+S3_BUCKET = os.environ.get("S3_BUCKET")
 HAIKU_MODEL_ID = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
-SONNET_MODEL_ID = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+SONNET_MODEL_ID = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
 QWEN_MODEL_ID = "qwen2.5-coder:7b"
-SERVICE_ROLE = os.environ["SERVICE_ROLE"]
+SERVICE_ROLE = os.environ.get("SERVICE_ROLE")
 
 BEDROCK_BATCH_MIN_PROMPTS = 100
 BEDROCK_BATCH_SIZE = 5000
@@ -619,5 +624,59 @@ def main():
         return
 
 
+class Query(BaseModel):
+    question: str
+
+
+def init_grag(work_dir: str, llm: str):
+    llm_config = get_llm_config(llm)
+    config = GraphRAG.Config(
+        llm_service=OpenAILLMService(api_key="bedrock", **llm_config),
+        embedding_service=OpenAIEmbeddingService(
+            model="cohere.embed-english-v3",
+            base_url="http://localhost:8000/api/v1/",
+            api_key="bedrock",
+            embedding_dim=1024,
+        ),
+    )
+
+    return GraphRAG(
+        working_dir=work_dir,
+        domain=DOMAIN,
+        example_queries="\n".join(EXAMPLE_QUERIES),
+        entity_types=ENTITY_TYPES,
+        config=config,
+    )
+
+
+def serve():
+    parser = argparse.ArgumentParser(description="Serve knowledge graph for LLM RAG")
+    parser.add_argument("--path", required=True, type=str, help="Directory to source files from")
+    parser.add_argument("--work_dir", required=True, type=str, help="Directory to store computed data")
+    parser.add_argument(
+        "--llm",
+        choices=["qwen", "sonnet", "haiku"],
+        default="qwen",
+        help="Select LLM service to use (qwen, sonnet, or haiku)",
+    )
+    args = parser.parse_args()
+
+    app = FastAPI()
+    grag = init_grag(args.work_dir, args.llm)
+
+    @app.post("/query")
+    def query(query: Query):
+        try:
+            response = grag.query(query.question).response
+            return {"response": response}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    uvicorn.run(app, host="0.0.0.0", port=8099)
+
+
 if __name__ == "__main__":
     main()
+
+if __name__ == "__serve__":
+    serve()
