@@ -58,7 +58,8 @@ s3_client = session.client(service_name="s3", region_name="us-west-2")
 
 S3_BUCKET = os.environ.get("S3_BUCKET")
 HAIKU_MODEL_ID = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
-SONNET_MODEL_ID = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+SONNET_37_MODEL_ID = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+SONNET_V2_MODEL_ID = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
 QWEN_MODEL_ID = "qwen2.5-coder:7b"
 SERVICE_ROLE = os.environ.get("SERVICE_ROLE")
 
@@ -486,6 +487,7 @@ def write_file(path, content):
         f.write(content)
 
 
+# TODO Configure max tokens
 def get_llm_config(llm_choice):
     if llm_choice == "qwen":
         return {
@@ -493,9 +495,15 @@ def get_llm_config(llm_choice):
             "base_url": "http://localhost:11434/v1/",
             "client": "openai",
         }
-    elif llm_choice == "sonnet":
+    elif llm_choice == "sonnetV2":
         return {
-            "model": SONNET_MODEL_ID,
+            "model": SONNET_V2_MODEL_ID,
+            "base_url": "http://localhost:8000/",
+            "client": "anthropic",
+        }
+    elif llm_choice == "sonnet37":
+        return {
+            "model": SONNET_37_MODEL_ID,
             "base_url": "http://localhost:8000/",
             "client": "anthropic",
         }
@@ -528,9 +536,9 @@ def main():
     )
     parser.add_argument(
         "--llm",
-        choices=["qwen", "sonnet", "haiku"],
+        choices=["qwen", "sonnet37", "sonnetv2", "haiku"],
         default="qwen",
-        help="Select LLM service to use (qwen, sonnet, or haiku)",
+        help="Select LLM service to use (qwen, sonnetv2, sonnet37, or haiku)",
     )
     args = parser.parse_args()
 
@@ -655,9 +663,9 @@ def serve():
     parser.add_argument("--work_dir", required=True, type=str, help="Directory to store computed data")
     parser.add_argument(
         "--llm",
-        choices=["qwen", "sonnet", "haiku"],
+        choices=["qwen", "sonnet37", "sonnetv2", "haiku"],
         default="qwen",
-        help="Select LLM service to use (qwen, sonnet, or haiku)",
+        help="Select LLM service to use (qwen, sonnetv2, sonnet37, or haiku)",
     )
     args = parser.parse_args()
 
