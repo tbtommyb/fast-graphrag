@@ -5,7 +5,9 @@ from typing import Any, Dict
 PROMPTS: Dict[str, Any] = {}
 
 ## NEW
-PROMPTS["entity_relationship_extraction"] = """# DOMAIN PROMPT
+PROMPTS[
+    "entity_relationship_extraction"
+] = """# DOMAIN PROMPT
 {domain}
 
 # GOAL
@@ -19,6 +21,7 @@ Examples of possible questions:
 1. Identify all entities of the given types. Make sure to extract all and only the entities that are of one of the given types. Use singular names and split compound concepts when necessary (for example, from the sentence "they are movie and theater directors", you should extract the entities "movie director" and "theater director").
 2. Identify all relationships between the entities found in step 1. Clearly resolve pronouns to their specific names to maintain clarity.
 3. Double check that each entity identified in step 1 appears in at least one relationship. If not, add the missing relationships.
+4. For each entity, provide alternative names (aliases) that users might use to refer to it, including plurals, natural language forms, and common variations. For code identifiers like 'CollectionPage', include user-friendly versions such as 'collections page', or 'collection page' or just 'collections'.
 
 # EXAMPLE DATA
 Example types: [location, organization, person, communication]
@@ -27,17 +30,17 @@ Example document: Radio City: Radio City is India's first private FM radio stati
 Output:
 {{
 "entities": [
-	{{"name": "RADIO CITY", "type": "organization", "desc": "Radio City is India's first private FM radio station"}},
-	{{"name": "INDIA", "type": "location", "desc": "A country"}},
-	{{"name": "FM RADIO STATION", "type": "communication", "desc": "A radio station that broadcasts using frequency modulation"}},
-	{{"name": "ENGLISH", "type": "communication", "desc": "A language"}},
-	{{"name": "HINDI", "type": "communication", "desc": "A language"}},
-	{{"name": "NEW MEDIA", "type": "communication", "desc": "New media"}},
-	{{"name": "PLANETRADIOCITY", "type": "organization", "desc": "PlanetRadiocity.com is an online music portal"}},
-	{{"name": "MUSIC PORTAL", "type": "communication", "desc": "A website that offers music related information"}},
-	{{"name": "NEWS", "type": "communication", "desc": "News"}},
-	{{"name": "VIDEO", "type": "communication", "desc": "Video"}},
-	{{"name": "SONG", "type": "communication", "desc": "Song"}}
+	{{"name": "RADIO CITY", "type": "organization", "desc": "Radio City is India's first private FM radio station", "aliases": ["radio station", "radio broadcaster", "FM station"]}},
+	{{"name": "INDIA", "type": "location", "desc": "A country", "aliases": ["Indian", "subcontinental"]}},
+	{{"name": "FM RADIO STATION", "type": "communication", "desc": "A radio station that broadcasts using frequency modulation", "aliases": ["FM broadcaster", "radio station"]}},
+	{{"name": "ENGLISH", "type": "communication", "desc": "A language", "aliases": ["English language"]}},
+	{{"name": "HINDI", "type": "communication", "desc": "A language", "aliases": ["Hindi language"]}},
+	{{"name": "NEW MEDIA", "type": "communication", "desc": "New media", "aliases": ["digital media", "online media"]}},
+	{{"name": "PLANETRADIOCITY", "type": "organization", "desc": "PlanetRadiocity.com is an online music portal", "aliases": ["PlanetRadiocity.com", "music portal", "online portal"]}},
+	{{"name": "MUSIC PORTAL", "type": "communication", "desc": "A website that offers music related information", "aliases": ["music website", "music platform"]}},
+	{{"name": "NEWS", "type": "communication", "desc": "News", "aliases": ["information", "updates"]}},
+	{{"name": "VIDEO", "type": "communication", "desc": "Video", "aliases": ["videos", "visual content"]}},
+	{{"name": "SONG", "type": "communication", "desc": "Song", "aliases": ["songs", "music", "tracks", "tunes"]}}
 ],
 "relationships": [
 	{{"source": "RADIO CITY", "target": "INDIA", "desc": "Radio City is located in India"}},
@@ -157,6 +160,11 @@ Follow these steps:
 4. While you write the response, you must include inline references to the all the sources you are using by appending `[<source_id>]` at the end of each sentence, where `source_id` is the corresponding source ID from the "Sources" list.
 5. Write the response to the user query - which must include the inline references - based on the information you have gathered. Be very concise and answer the user query directly. If the response cannot be inferred from the input data, just say no relevant information was found. Do not make anything up or add unrelevant information.
 
+Context:
+You have access to two packages:
+1. AVLivingRoomRustClient: The main package aka "rust client". It is an application that renders a UI.
+2. IgnitionXRustBundle: The SDK consumed by AVLivingRoomClient. It is imported as `amzn-ignx-compositron`.
+
 Answer:
 """
 
@@ -180,6 +188,11 @@ Follow these steps:
 2. Look at the "Entities" and "Relationships" tables to get a general sense of the data and understand which information is the most relevant to answer the query.
 3. Carefully analyze all the "Sources" to get more detailed information. Information could be scattered across several sources, use the identified relevant entities and relationships to guide yourself through the analysis of the sources.
 4. Write the response to the user query based on the information you have gathered. Be very concise and answer the user query directly. If the response cannot be inferred from the input data, just say no relevant information was found. Do not make anything up or add unrelevant information.
+
+Context:
+You have access to two packages:
+1. AVLivingRoomRustClient: The main package aka "rust client". It is an application that renders a UI.
+2. IgnitionXRustBundle: The SDK consumed by AVLivingRoomClient. It is imported as `amzn-ignx-compositron`.
 
 Answer:
 """

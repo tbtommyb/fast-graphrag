@@ -20,8 +20,15 @@ from typing import Union
 from fast_graphrag import GraphRAG
 from fast_graphrag._llm import OpenAIEmbeddingService, OpenAILLMService
 
-DOMAIN = """
+# JavaScript-specific domain description
+JS_DOMAIN = """
 Analyze these filemaps and TypeScript code to identify the components, functions, types and their relationships and functionality.
+Filemaps start with "<filemap>" and give an overview of the hierarchical structure of a file showing which identifiers are in which named scope.
+"""
+
+# Rust-specific domain description
+RUST_DOMAIN = """
+Analyze these filemaps and Rust code to identify the structs, traits, functions, enums and their relationships and functionality.
 Filemaps start with "<filemap>" and give an overview of the hierarchical structure of a file showing which identifiers are in which named scope.
 """
 
@@ -36,7 +43,8 @@ EXAMPLE_QUERIES = [
     "How does this component work?",
 ]
 
-ENTITY_TYPES = [
+# JavaScript-specific entity types
+JS_ENTITY_TYPES = [
     "Class",
     "Component",
     "Constant",
@@ -50,6 +58,23 @@ ENTITY_TYPES = [
     "Test",
     "Type",
     "Variable",
+]
+
+# Rust-specific entity types
+RUST_ENTITY_TYPES = [
+    "Struct",
+    "Trait",
+    "Enum",
+    "Function",
+    "Method",
+    "Impl",
+    "Macro",
+    "Module",
+    "Constant",
+    "Type",
+    "Test",
+    "Filepath",
+    "Identifier",
 ]
 
 session = boto3.session.Session(profile_name="PROFILE_NAME")
@@ -70,25 +95,51 @@ BEDROCK_BATCH_MAX_PROMPTS = 50000
 BASE_DIR = os.environ["BASE_DIR"]
 
 
-# TODO: handle multiple input paths
+def should_exclude_path(file_path):
+    """Check if a file path should be excluded based on directory patterns."""
+    exclude_patterns = [
+        "/build/",
+        "node_modules",
+        "dist",
+        "/.git/",
+        "\\build\\",
+        "\\dist\\",
+        "\\node_modules\\",
+        "\\.git\\",
+    ]
+    return any(pattern in file_path for pattern in exclude_patterns)
+
+
 def gather_files(directory_path, extensions, chunk_size=3600):
     output = []
     mapper = FileMapper()
     files = sum(
-        [glob.glob(os.path.join(directory_path, f"**/*.{ext}"), recursive=True) for ext in extensions],
+        [
+            glob.glob(os.path.join(directory_path, f"**/*.{ext}"), recursive=True)
+            for ext in extensions
+        ],
         [],
     )
 
+    files = [f for f in files if not should_exclude_path(f)]
+
     for file_path in files:
+        print(file_path)
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
-                if file_path.endswith((".ts", ".tsx")) and len(content) > chunk_size:
+                if (
+                    file_path.endswith(tuple(f".{ext}" for ext in extensions))
+                    and not file_path.endswith((".md", ".toml"))
+                    and len(content) > chunk_size
+                ):
                     abs_path = os.path.abspath(file_path)
                     base_dir_idx = abs_path.find(BASE_DIR)
 
                     if base_dir_idx != -1:
-                        rel_path = abs_path[base_dir_idx + len(BASE_DIR) :].lstrip(os.sep)
+                        rel_path = abs_path[base_dir_idx + len(BASE_DIR) :].lstrip(
+                            os.sep
+                        )
                     else:
                         rel_path = os.path.relpath(file_path, directory_path)
 
@@ -96,7 +147,8 @@ def gather_files(directory_path, extensions, chunk_size=3600):
                     if filemap:
                         filemap_chunks = mapper.format_scope_chunks(
                             filemap,
-                            chunk_size - 600,  # hardcode 600 to work around ineffective chunking
+                            chunk_size
+                            - 600,  # hardcode 600 to work around ineffective chunking
                         )
                         output.extend(filemap_chunks)
                 output.append(content)
@@ -108,9 +160,14 @@ def gather_files(directory_path, extensions, chunk_size=3600):
 
 def insert_files(directory_path, extensions, grag, max_retries=3, backoff_base=2):
     files = sum(
-        [glob.glob(os.path.join(directory_path, f"**/*.{ext}"), recursive=True) for ext in extensions],
+        [
+            glob.glob(os.path.join(directory_path, f"**/*.{ext}"), recursive=True)
+            for ext in extensions
+        ],
         [],
     )
+
+    files = [f for f in files if not should_exclude_path(f)]
 
     total_files = len(files)
     processed_files = 0
@@ -126,7 +183,9 @@ def insert_files(directory_path, extensions, grag, max_retries=3, backoff_base=2
                 file_content = f"// <filepath>{file_path}</filepath>\n\n{content}"
                 grag.insert(file_content)
                 processed_files += 1
-                print(f"Processed {processed_files}/{total_files} files ({(processed_files / total_files) * 100:.1f}%)")
+                print(
+                    f"Processed {processed_files}/{total_files} files ({(processed_files / total_files) * 100:.1f}%)"
+                )
         except Exception as e:
             print(f"[insert_files] Error processing file {file_path}: {e}")
             print(f"Stack trace: {traceback.format_exc()}")
@@ -145,12 +204,16 @@ def insert_files(directory_path, extensions, grag, max_retries=3, backoff_base=2
 
         for file_path, attempts in failed_files:
             if attempts > max_retries:
-                print(f"[insert_files] Permanently failed to process {file_path} after {max_retries} attempts")
+                print(
+                    f"[insert_files] Permanently failed to process {file_path} after {max_retries} attempts"
+                )
                 continue
 
             # Wait with exponential backoff
             wait_time = backoff_base**attempts
-            print(f"[insert_files] Retrying {file_path} (attempt {attempts}) after {wait_time}s delay")
+            print(
+                f"[insert_files] Retrying {file_path} (attempt {attempts}) after {wait_time}s delay"
+            )
             time.sleep(wait_time)
 
             try:
@@ -165,9 +228,13 @@ def insert_files(directory_path, extensions, grag, max_retries=3, backoff_base=2
 
         failed_files = still_failed
         if failed_files:
-            print(f"[insert_files] {len(failed_files)} files still failing, continuing retries...")
+            print(
+                f"[insert_files] {len(failed_files)} files still failing, continuing retries..."
+            )
 
-    print(f"\nCompleted processing {total_files} files with {len(failed_files)} permanent failures")
+    print(
+        f"\nCompleted processing {total_files} files with {len(failed_files)} permanent failures"
+    )
 
 
 def interactive_questions(grag):
@@ -224,7 +291,9 @@ def create_unique_job_name(prefix: str = "bedrock-batch", max_length: int = 64) 
     return job_name
 
 
-def split_file_into_batches(file_path: Path, min_lines: int, max_lines: int) -> list[list[str]]:
+def split_file_into_batches(
+    file_path: Path, min_lines: int, max_lines: int
+) -> list[list[str]]:
     """
     Split a file into batches based on number of lines
 
@@ -298,10 +367,14 @@ def upload_to_s3(file_path: Union[str, Path], bucket: str, key: str = None) -> b
         return False
 
 
-def create_bedrock_jobs(base_path: Path, file_name: str, job_name: str, model_id: str) -> list[tuple[int, str]]:
+def create_bedrock_jobs(
+    base_path: Path, file_name: str, job_name: str, model_id: str
+) -> list[tuple[int, str]]:
     """ """
     file_path = base_path / file_name
-    batches = split_file_into_batches(file_path, BEDROCK_BATCH_MIN_PROMPTS, BEDROCK_BATCH_SIZE)
+    batches = split_file_into_batches(
+        file_path, BEDROCK_BATCH_MIN_PROMPTS, BEDROCK_BATCH_SIZE
+    )
     job_info = []
 
     # Split the filename and extension
@@ -311,7 +384,9 @@ def create_bedrock_jobs(base_path: Path, file_name: str, job_name: str, model_id
 
     for i, batch in enumerate(batches):
         if len(batch) < 100:
-            print(f"ERROR: batch file {base_name} has fewer than 100 entries. Bedrock will reject")
+            print(
+                f"ERROR: batch file {base_name} has fewer than 100 entries. Bedrock will reject"
+            )
             raise Exception
         if len(batches) > 1:
             batch_file_name = f"{base_name}.batch{i}.{extension}"
@@ -326,8 +401,12 @@ def create_bedrock_jobs(base_path: Path, file_name: str, job_name: str, model_id
         # Upload and create job
         upload_to_s3(batch_path, S3_BUCKET)
 
-        input_data_config = {"s3InputDataConfig": {"s3Uri": f"s3://{S3_BUCKET}/{batch_file_name}"}}
-        output_data_config = {"s3OutputDataConfig": {"s3Uri": f"s3://{S3_BUCKET}/claude-output/"}}
+        input_data_config = {
+            "s3InputDataConfig": {"s3Uri": f"s3://{S3_BUCKET}/{batch_file_name}"}
+        }
+        output_data_config = {
+            "s3OutputDataConfig": {"s3Uri": f"s3://{S3_BUCKET}/claude-output/"}
+        }
 
         response = bedrock_client.create_model_invocation_job(
             roleArn=SERVICE_ROLE,
@@ -381,7 +460,9 @@ def wait_for_batch_jobs(
                 print(f"Job {job_arn} completed")
 
                 # Download output
-                output_s3_uri = response["outputDataConfig"]["s3OutputDataConfig"]["s3Uri"]
+                output_s3_uri = response["outputDataConfig"]["s3OutputDataConfig"][
+                    "s3Uri"
+                ]
                 s3_parts = output_s3_uri.replace("s3://", "").split("/")
                 bucket = s3_parts[0]
                 folder_name = job_arn.split("/")[-1]
@@ -404,11 +485,15 @@ def wait_for_batch_jobs(
                 completed_jobs.add(job_arn)
 
             elif status in ["Expired", "Failed", "Stopped"]:
-                print(f"Job {job_arn} failed: {response.get('failureReason', 'Unknown error')}")
+                print(
+                    f"Job {job_arn} failed: {response.get('failureReason', 'Unknown error')}"
+                )
                 return False
 
         if len(completed_jobs) < len(job_arns):
-            print(f"Waiting for {len(job_arns) - len(completed_jobs)} jobs to complete...")
+            print(
+                f"Waiting for {len(job_arns) - len(completed_jobs)} jobs to complete..."
+            )
             time.sleep(poll_interval_seconds)
 
     if len(job_arns) > 1:
@@ -447,7 +532,9 @@ def read_file_lines(path):
 
 
 class JobsManager:
-    def __init__(self, source_dir: Path, work_dir: Path, base_path: Path, model_id: str):
+    def __init__(
+        self, source_dir: Path, work_dir: Path, base_path: Path, model_id: str
+    ):
         self.job_arns_file = Path(work_dir) / "jobArns.json"
         self.source_dir = source_dir
         self.work_dir = work_dir
@@ -470,7 +557,9 @@ class JobsManager:
         if not self.arns.get(task_name):
             if callback:
                 callback()
-            job_arns = create_bedrock_jobs(self.base_path, prompt_file_name, task_name, self.model_id)
+            job_arns = create_bedrock_jobs(
+                self.base_path, prompt_file_name, task_name, self.model_id
+            )
             self.update_arns(task_name, job_arns)
         arns = self.arns[task_name]
         file_out = f"{prompt_file_name}.out.{arns[0].split('/')[-1]}"
@@ -479,7 +568,9 @@ class JobsManager:
             return read_file_lines(self.base_path / file_out)
 
     def wait_for(self, arns: list, out_file_name: str, poll_interval_secs: int = 300):
-        return wait_for_batch_jobs(arns, self.base_path, out_file_name, poll_interval_secs)
+        return wait_for_batch_jobs(
+            arns, self.base_path, out_file_name, poll_interval_secs
+        )
 
 
 def write_file(path, content):
@@ -517,8 +608,12 @@ def get_llm_config(llm_choice):
 
 def main():
     parser = argparse.ArgumentParser(description="Create knowledge graph for LLM RAG")
-    parser.add_argument("--path", required=True, type=str, help="Directory to source files from")
-    parser.add_argument("--work_dir", required=True, type=str, help="Directory to store computed data")
+    parser.add_argument(
+        "--path", required=True, type=str, help="Directory to source files from"
+    )
+    parser.add_argument(
+        "--work_dir", required=True, type=str, help="Directory to store computed data"
+    )
     parser.add_argument(
         "--query",
         action=argparse.BooleanOptionalAction,
@@ -536,13 +631,26 @@ def main():
     )
     parser.add_argument(
         "--llm",
-        choices=["qwen", "sonnet37", "sonnetv2", "haiku"],
+        choices=["qwen", "sonnet37", "sonnetV2", "haiku"],
         default="qwen",
-        help="Select LLM service to use (qwen, sonnetv2, sonnet37, or haiku)",
+        help="Select LLM service to use (qwen, sonnetV2, sonnet37, or haiku)",
+    )
+    parser.add_argument(
+        "--client",
+        choices=["rust", "js"],
+        default="js",
+        help="Select client language to analyze (rust or js)",
     )
     args = parser.parse_args()
 
     source_directory = args.path
+
+    # Select domain and entity types based on client language
+    domain = JS_DOMAIN if args.client == "js" else RUST_DOMAIN
+    entity_types = JS_ENTITY_TYPES if args.client == "js" else RUST_ENTITY_TYPES
+
+    # Select file extensions based on client language
+    extensions = ["ts", "tsx", "md"] if args.client == "js" else ["toml", "rs"]
 
     llm_config = get_llm_config(args.llm)
     config = GraphRAG.Config(
@@ -558,18 +666,19 @@ def main():
     # TODO: make BatchGraphRAG variant / Bedrock batch_service
     grag = GraphRAG(
         working_dir=args.work_dir,
-        domain=DOMAIN,
+        domain=domain,
         example_queries="\n".join(EXAMPLE_QUERIES),
-        entity_types=ENTITY_TYPES,
+        entity_types=entity_types,
         config=config,
     )
 
     base_path = Path(args.work_dir) / "batch_prompts"
     base_path.mkdir(parents=True, exist_ok=True)
 
-    jobs_manager = JobsManager(source_directory, args.work_dir, base_path, llm_config["model"])
+    jobs_manager = JobsManager(
+        source_directory, args.work_dir, base_path, llm_config["model"]
+    )
 
-    extensions = ["ts", "tsx", "md"]
     if args.build:
         print(f"Beginning {'batch ' if args.batch else ''}job for: {source_directory}")
 
@@ -589,18 +698,24 @@ def main():
                 file_contents, base_path / extraction_prompt_file_name
             )
 
-            extract_output = jobs_manager.get_or_create("batch-extract", extraction_prompt_file_name)
+            extract_output = jobs_manager.get_or_create(
+                "batch-extract", extraction_prompt_file_name
+            )
             if not extract_output:
                 return
 
             subgraphs = grag.batch_insert(chunks, extract_output)
             # TODO: handle updates to existing graph
-            graphs = grag.batch_generate_graphs(subgraphs, chunks, Path(args.work_dir) / "graphs_cache.pkl")
+            graphs = grag.batch_generate_graphs(
+                subgraphs, chunks, Path(args.work_dir) / "graphs_cache.pkl"
+            )
 
             summarize_nodes_output = jobs_manager.get_or_create(
                 "summarize-nodes-description",
                 summarize_nodes_prompt_file_name,
-                lambda: grag.prepare_batch_node_summaries(graphs, base_path / summarize_nodes_prompt_file_name),
+                lambda: grag.prepare_batch_node_summaries(
+                    graphs, base_path / summarize_nodes_prompt_file_name
+                ),
             )
             if not summarize_nodes_output:
                 return
@@ -636,7 +751,7 @@ class Query(BaseModel):
     question: str
 
 
-def init_grag(work_dir: str, llm: str):
+def init_grag(work_dir: str, llm: str, client: str = "js"):
     llm_config = get_llm_config(llm)
     config = GraphRAG.Config(
         llm_service=OpenAILLMService(api_key="bedrock", **llm_config),
@@ -648,29 +763,43 @@ def init_grag(work_dir: str, llm: str):
         ),
     )
 
+    # Select domain and entity types based on client language
+    domain = JS_DOMAIN if client == "js" else RUST_DOMAIN
+    entity_types = JS_ENTITY_TYPES if client == "js" else RUST_ENTITY_TYPES
+
     return GraphRAG(
         working_dir=work_dir,
-        domain=DOMAIN,
+        domain=domain,
         example_queries="\n".join(EXAMPLE_QUERIES),
-        entity_types=ENTITY_TYPES,
+        entity_types=entity_types,
         config=config,
     )
 
 
 def serve():
     parser = argparse.ArgumentParser(description="Serve knowledge graph for LLM RAG")
-    parser.add_argument("--path", required=True, type=str, help="Directory to source files from")
-    parser.add_argument("--work_dir", required=True, type=str, help="Directory to store computed data")
+    parser.add_argument(
+        "--path", required=True, type=str, help="Directory to source files from"
+    )
+    parser.add_argument(
+        "--work_dir", required=True, type=str, help="Directory to store computed data"
+    )
     parser.add_argument(
         "--llm",
         choices=["qwen", "sonnet37", "sonnetv2", "haiku"],
         default="qwen",
         help="Select LLM service to use (qwen, sonnetv2, sonnet37, or haiku)",
     )
+    parser.add_argument(
+        "--client",
+        choices=["rust", "js"],
+        default="js",
+        help="Select client language to analyze (rust or js)",
+    )
     args = parser.parse_args()
 
     app = FastAPI()
-    grag = init_grag(args.work_dir, args.llm)
+    grag = init_grag(args.work_dir, args.llm, args.client)
 
     @app.post("/query")
     def query(query: Query):

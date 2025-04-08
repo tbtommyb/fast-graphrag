@@ -1,4 +1,5 @@
 import tree_sitter_typescript as tsts
+import tree_sitter_rust as tsrust
 from tree_sitter import Language, Parser
 import os
 from collections import namedtuple
@@ -9,6 +10,7 @@ import argparse
 
 TS_LANGUAGE = Language(tsts.language_typescript())
 TSX_LANGUAGE = Language(tsts.language_tsx())
+RUST_LANGUAGE = Language(tsrust.language())
 
 
 @dataclass(frozen=True)
@@ -33,12 +35,8 @@ class FileMapper:
     def __init__(self):
         self.ts_parser = Parser(TS_LANGUAGE)
         self.tsx_parser = Parser(TSX_LANGUAGE)
+        self.rust_parser = Parser(RUST_LANGUAGE)
         self.seen = set()
-
-        # self.rust_parser = Parser()
-
-        # RUST_LANGUAGE = Language(language_dir, "rust")
-        # self.rust_parser.set_language(RUST_LANGUAGE)
 
     def _get_identifier_name(self, node: Any) -> Optional[str]:
         """Extract identifier name from a node."""
@@ -48,6 +46,9 @@ class FileMapper:
             "property_identifier",
             "private_property_identifier",
             "variable_declarator",
+            # Add Rust-specific identifier types
+            "type_identifier",
+            "field_identifier",
         }:
             return node.text.decode("utf-8")
 
@@ -60,6 +61,29 @@ class FileMapper:
                 if next_next and next_next.type in {"arrow_function", "function"}:
                     return node.text.decode("utf-8")
 
+        # Rust-specific identifier handling
+        if node.type == "impl_item":
+            for child in node.children:
+                if child.type == "function_item":
+                    for func_child in child.children:
+                        if func_child.type == "function_signature":
+                            for sig_child in func_child.children:
+                                if sig_child.type == "identifier":
+                                    return sig_child.text.decode("utf-8")
+
+        if node.type == "function_item":
+            for child in node.children:
+                if child.type == "function_signature":
+                    for sig_child in child.children:
+                        if sig_child.type == "identifier":
+                            return sig_child.text.decode("utf-8")
+
+        # Handle struct and trait declarations in Rust
+        if node.type in {"struct_item", "trait_item", "enum_item", "mod_item"}:
+            for child in node.children:
+                if child.type == "identifier":
+                    return child.text.decode("utf-8")
+
         # For declarations, look for specific name patterns
         for child in node.children:
             if child.type in {
@@ -67,6 +91,8 @@ class FileMapper:
                 "property_identifier",
                 "private_property_identifier",
                 "type_identifier",
+                # Add Rust-specific types
+                "field_identifier",
             }:
                 return child.text.decode("utf-8")
 
@@ -80,6 +106,7 @@ class FileMapper:
         scopes = []
 
         def visit(node):
+            # TypeScript/JavaScript nodes
             if node.type == "type_identifier":
                 identifiers.add(node.text.decode("utf-8"))
                 return
@@ -115,6 +142,30 @@ class FileMapper:
                 identifiers.add(name)
                 return
 
+            # Rust-specific nodes
+            elif node.type == "field_identifier":
+                identifiers.add(node.text.decode("utf-8"))
+                return
+
+            elif node.type == "field_declaration":
+                for child in node.children:
+                    if child.type == "field_identifier":
+                        identifiers.add(child.text.decode("utf-8"))
+
+            # Handle struct fields
+            elif node.type == "field_declaration_list":
+                for child in node.children:
+                    if child.type == "field_declaration":
+                        for field_child in child.children:
+                            if field_child.type == "field_identifier":
+                                identifiers.add(field_child.text.decode("utf-8"))
+
+            # Handle trait/impl method declarations
+            elif node.type == "function_signature":
+                for child in node.children:
+                    if child.type == "identifier":
+                        identifiers.add(child.text.decode("utf-8"))
+
             # Check if this node creates a new scope
             if scope := self._build_scope_tree(node, source_bytes, filepath):
                 scopes.append(scope)
@@ -126,7 +177,9 @@ class FileMapper:
         visit(node)
         return sorted(identifiers), scopes
 
-    def _build_scope_tree(self, node: Any, source_bytes: bytes, filepath: str) -> Optional[Scope]:
+    def _build_scope_tree(
+        self, node: Any, source_bytes: bytes, filepath: str
+    ) -> Optional[Scope]:
         """Build scope tree focusing only on named declarations."""
         if node in self.seen:
             return None
@@ -143,13 +196,16 @@ class FileMapper:
                 child_identifiers.update(name for name in child.identifiers)
                 # Recursively add identifiers from nested scopes
                 for nested_child in child.children:
-                    child_identifiers.update(self._get_all_child_identifiers(nested_child))
+                    child_identifiers.update(
+                        self._get_all_child_identifiers(nested_child)
+                    )
 
             # Filter out identifiers that appear in child scopes
             return [name for name in identifiers if name not in child_identifiers]
 
         # List of node types that create named scopes
         scope_types = {
+            # TypeScript/JavaScript
             "program": "file",
             "source_file": "file",
             "class_declaration": "class",
@@ -160,17 +216,32 @@ class FileMapper:
             "namespace_declaration": "namespace",
             "module_declaration": "module",
             "type_alias_declaration": "type",
+            # Rust-specific
+            "function_item": "function",
+            "impl_item": "impl",
+            "struct_item": "struct",
+            "enum_item": "enum",
+            "trait_item": "trait",
+            "mod_item": "module",
+            "macro_definition": "macro",
         }
 
-        if node.type == "property_identifier" or node.type == "private_property_identifier":
+        if (
+            node.type == "property_identifier"
+            or node.type == "private_property_identifier"
+        ):
             next_sibling = node.next_sibling
             if next_sibling and next_sibling.type == "=":
                 next_next = next_sibling.next_sibling
                 if next_next and next_next.type == "arrow_function":
                     name = node.text.decode("utf-8")
-                    identifiers, child_scopes = self._collect_identifiers(next_next, source_bytes, filepath)
+                    identifiers, child_scopes = self._collect_identifiers(
+                        next_next, source_bytes, filepath
+                    )
 
-                    filtered_identifiers = filter_scope_identifiers(identifiers, child_scopes)
+                    filtered_identifiers = filter_scope_identifiers(
+                        identifiers, child_scopes
+                    )
 
                     return Scope(
                         kind="method",
@@ -193,15 +264,49 @@ class FileMapper:
                     arrow_function = child
 
             if name and arrow_function:
-                identifiers, child_scopes = self._collect_identifiers(arrow_function, source_bytes, filepath)
+                identifiers, child_scopes = self._collect_identifiers(
+                    arrow_function, source_bytes, filepath
+                )
 
-                filtered_identifiers = filter_scope_identifiers(identifiers, child_scopes)
+                filtered_identifiers = filter_scope_identifiers(
+                    identifiers, child_scopes
+                )
 
                 return Scope(
                     kind="function",
                     name=name,
                     start_pos=node.start_byte,
                     end_pos=arrow_function.end_byte,
+                    identifiers=filtered_identifiers,
+                    children=child_scopes,
+                )
+
+        # Handle Rust impl blocks
+        if node.type == "impl_item":
+            # Try to get the type being implemented
+            impl_type = None
+            for child in node.children:
+                if child.type == "type_identifier":
+                    impl_type = child.text.decode("utf-8")
+                    break
+                # Look for path expressions that might contain the type
+                elif child.type == "path" or child.type == "scoped_identifier":
+                    impl_type = child.text.decode("utf-8")
+                    break
+
+            if impl_type:
+                identifiers, child_scopes = self._collect_identifiers(
+                    node, source_bytes, filepath
+                )
+                filtered_identifiers = filter_scope_identifiers(
+                    identifiers, child_scopes
+                )
+
+                return Scope(
+                    kind="impl",
+                    name=impl_type,
+                    start_pos=node.start_byte,
+                    end_pos=node.end_byte,
                     identifiers=filtered_identifiers,
                     children=child_scopes,
                 )
@@ -221,7 +326,9 @@ class FileMapper:
             name = filepath
 
         # Collect identifiers and child scopes
-        identifiers, child_scopes = self._collect_identifiers(node, source_bytes, filepath)
+        identifiers, child_scopes = self._collect_identifiers(
+            node, source_bytes, filepath
+        )
 
         filtered_identifiers = filter_scope_identifiers(identifiers, child_scopes)
 
@@ -253,7 +360,13 @@ class FileMapper:
             source_bytes = f.read()
 
         ext = Path(file_path).suffix
-        parser = self.ts_parser if ext == ".ts" else self.tsx_parser
+        # Choose the appropriate parser based on file extension
+        if ext == ".rs":
+            parser = self.rust_parser
+        elif ext == ".ts":
+            parser = self.ts_parser
+        else:
+            parser = self.tsx_parser
 
         tree = parser.parse(source_bytes)
         return self._build_scope_tree(tree.root_node, source_bytes, relative_file_path)
@@ -323,17 +436,33 @@ class FileMapper:
                     current_line = ", ".join(identifiers)
                     if current_length + len(current_line) + 100 > char_limit:
                         # Find break point
-                        for i in range(len(identifiers)):
+                        found_breakpoint = False
+                        for i in range(
+                            1, len(identifiers)
+                        ):  # Start from 1 to ensure progress
                             partial_line = ", ".join(identifiers[:i])
                             if current_length + len(partial_line) + 100 > char_limit:
-                                if i > 0:
-                                    add_to_chunk(partial_line, indent + 2)
-                                    identifiers = identifiers[i:]
+                                # We found the last index that will fit
+                                if i > 1:
+                                    add_to_chunk(
+                                        ", ".join(identifiers[: i - 1]), indent + 2
+                                    )
+                                    identifiers = identifiers[
+                                        i - 1 :
+                                    ]  # Update identifiers
+                                    found_breakpoint = True
                                     flush_chunk()
-                                break
+                                    break
+
+                        # If no suitable breakpoint was found, force progress by taking one identifier
+                        if not found_breakpoint:
+                            add_to_chunk(identifiers[0], indent + 2)
+                            identifiers = identifiers[1:]  # Take just one and continue
+                            flush_chunk()
                     else:
+                        # All remaining identifiers fit
                         add_to_chunk(current_line, indent + 2)
-                        identifiers = []
+                        identifiers = []  # Clear identifiers to exit the loop
 
                 add_to_chunk("]", indent + 1)
 
@@ -362,7 +491,9 @@ class FileMapper:
 
 def main():
     mapper = FileMapper()
-    parser = argparse.ArgumentParser(description="Extract condensed filemap from TS/TSX file")
+    parser = argparse.ArgumentParser(
+        description="Extract condensed filemap from TS/TSX/Rust file"
+    )
     parser.add_argument("--path", required=True, type=str, help="File to analyse")
     args = parser.parse_args()
 

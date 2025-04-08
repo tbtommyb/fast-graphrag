@@ -1,7 +1,7 @@
 import asyncio
 from dataclasses import dataclass, field
 from itertools import chain
-import pickle
+import textwrap
 from typing import (
     Any,
     Awaitable,
@@ -46,8 +46,12 @@ from ._base import BaseStateManagerService
 
 
 @dataclass
-class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THash, TChunk, TId, TEmbedding]):
-    blob_storage_cls: Type[BaseBlobStorage[csr_matrix]] = field(default=PickleBlobStorage)
+class DefaultStateManagerService(
+    BaseStateManagerService[TEntity, TRelation, THash, TChunk, TId, TEmbedding]
+):
+    blob_storage_cls: Type[BaseBlobStorage[csr_matrix]] = field(
+        default=PickleBlobStorage
+    )
     insert_similarity_score_threshold: float = field(default=0.9)
     query_similarity_score_threshold: Optional[float] = field(default=0.7)
 
@@ -58,11 +62,15 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
         self.entity_storage.namespace = self.workspace.make_for("entities")
         self.chunk_storage.namespace = self.workspace.make_for("chunks")
 
-        self._entities_to_relationships: BaseBlobStorage[csr_matrix] = self.blob_storage_cls(
-            namespace=self.workspace.make_for("map_e2r"), config=None
+        self._entities_to_relationships: BaseBlobStorage[csr_matrix] = (
+            self.blob_storage_cls(
+                namespace=self.workspace.make_for("map_e2r"), config=None
+            )
         )
-        self._relationships_to_chunks: BaseBlobStorage[csr_matrix] = self.blob_storage_cls(
-            namespace=self.workspace.make_for("map_r2c"), config=None
+        self._relationships_to_chunks: BaseBlobStorage[csr_matrix] = (
+            self.blob_storage_cls(
+                namespace=self.workspace.make_for("map_r2c"), config=None
+            )
         )
 
     async def get_num_entities(self) -> int:
@@ -74,15 +82,21 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
     async def get_num_chunks(self) -> int:
         return await self.chunk_storage.size()
 
-    async def filter_new_chunks(self, chunks_per_data: Iterable[Iterable[TChunk]]) -> List[List[TChunk]]:
+    async def filter_new_chunks(
+        self, chunks_per_data: Iterable[Iterable[TChunk]]
+    ) -> List[List[TChunk]]:
         flattened_chunks = [chunk for chunks in chunks_per_data for chunk in chunks]
         if len(flattened_chunks) == 0:
             return []
 
-        new_chunks_mask = await self.chunk_storage.mask_new(keys=[c.id for c in flattened_chunks])
+        new_chunks_mask = await self.chunk_storage.mask_new(
+            keys=[c.id for c in flattened_chunks]
+        )
 
         i = iter(new_chunks_mask)
-        new_chunks = [[chunk for chunk in chunks if next(i)] for chunks in chunks_per_data]
+        new_chunks = [
+            [chunk for chunk in chunks if next(i)] for chunks in chunks_per_data
+        ]
 
         return new_chunks
 
@@ -160,9 +174,13 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
         # Insert entities in entity_storage
         # TODO make sure TEntity never has none values
         # TODO make this bit batch async too
-        embeddings = await self.embedding_service.encode(texts=[d.to_str() for _, d in upserted_nodes if d is not None])
+        embeddings = await self.embedding_service.encode(
+            texts=[d.to_str() for _, d in upserted_nodes if d is not None]
+        )
         progress_bar.update(1)
-        await self.entity_storage.upsert(ids=(i for i, _ in upserted_nodes), embeddings=embeddings)
+        await self.entity_storage.upsert(
+            ids=(i for i, _ in upserted_nodes), embeddings=embeddings
+        )
         progress_bar.update(1)
 
         # STEP: Entity deduplication
@@ -179,7 +197,9 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
         # so we only select half of that by index order
         similar_indices[
             (scores < self.insert_similarity_score_threshold)
-            | (similar_indices <= upserted_indices)  # remove indices smaller or equal the entity
+            | (
+                similar_indices <= upserted_indices
+            )  # remove indices smaller or equal the entity
         ] = 0  # 0 can be used here (not 100% sure, but 99% sure)
         progress_bar.update(1)
 
@@ -196,33 +216,45 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
             return [
                 (source_index, idx)
                 for idx in target_indices
-                if idx != 0 and not await self.graph_storage.are_neighbours(source_index, idx)
+                if idx != 0
+                and not await self.graph_storage.are_neighbours(source_index, idx)
             ]
 
         new_edge_indices = list(
             chain(
-                *await asyncio.gather(*[_insert_identiy_edges(i, indices) for i, indices in enumerate(similar_indices)])
+                *await asyncio.gather(
+                    *[
+                        _insert_identiy_edges(i, indices)
+                        for i, indices in enumerate(similar_indices)
+                    ]
+                )
             )
         )
         new_edges_attrs: Dict[str, Any] = {
             "description": ["is"] * len(new_edge_indices),
             "chunks": [[]] * len(new_edge_indices),
         }
-        await self.graph_storage.insert_edges(indices=new_edge_indices, attrs=new_edges_attrs)
+        await self.graph_storage.insert_edges(
+            indices=new_edge_indices, attrs=new_edges_attrs
+        )
         progress_bar.update(1)
 
         # STEP: Save chunks
         # Insert chunks in chunk_storage
         progress_bar.set_description("Building... [saving chunks]")
         flattened_chunks = [chunk for chunks in documents for chunk in chunks]
-        await self.chunk_storage.upsert(keys=[chunk.id for chunk in flattened_chunks], values=flattened_chunks)
+        await self.chunk_storage.upsert(
+            keys=[chunk.id for chunk in flattened_chunks], values=flattened_chunks
+        )
         progress_bar.update(1)
         progress_bar.set_description("Building [done]")
 
     async def upsert(
         self,
         llm: BaseLLMService,
-        subgraphs: List[asyncio.Future[Optional[BaseGraphStorage[TEntity, TRelation, TId]]]],
+        subgraphs: List[
+            asyncio.Future[Optional[BaseGraphStorage[TEntity, TRelation, TId]]]
+        ],
         documents: Iterable[Iterable[TChunk]],
         show_progress: bool = True,
     ) -> None:
@@ -267,7 +299,9 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
             return
 
         if failed_tasks > 0:
-            logger.warning(f"Failed to process {failed_tasks} out of {processed_tasks} files")
+            logger.warning(
+                f"Failed to process {failed_tasks} out of {processed_tasks} files"
+            )
 
         progress_bar = tqdm(total=7, disable=not show_progress, desc="Building...")
         # STEP (2): Upserting nodes and edges
@@ -286,9 +320,13 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
         # STEP (2): Computing entity embeddings
         progress_bar.set_description("Building... [computing embeddings]")
         # Insert entities in entity_storage
-        embeddings = await self.embedding_service.encode(texts=[d.to_str() for _, d in upserted_nodes])
+        embeddings = await self.embedding_service.encode(
+            texts=[d.to_str() for _, d in upserted_nodes]
+        )
         progress_bar.update(1)
-        await self.entity_storage.upsert(ids=(i for i, _ in upserted_nodes), embeddings=embeddings)
+        await self.entity_storage.upsert(
+            ids=(i for i, _ in upserted_nodes), embeddings=embeddings
+        )
         progress_bar.update(1)
 
         # STEP: Entity deduplication
@@ -305,7 +343,9 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
         # so we only select half of that by index order
         similar_indices[
             (scores < self.insert_similarity_score_threshold)
-            | (similar_indices <= upserted_indices)  # remove indices smaller or equal the entity
+            | (
+                similar_indices <= upserted_indices
+            )  # remove indices smaller or equal the entity
         ] = 0  # 0 can be used here (not 100% sure, but 99% sure)
         progress_bar.update(1)
 
@@ -322,26 +362,36 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
             return [
                 (source_index, idx)
                 for idx in target_indices
-                if idx != 0 and not await self.graph_storage.are_neighbours(source_index, idx)
+                if idx != 0
+                and not await self.graph_storage.are_neighbours(source_index, idx)
             ]
 
         new_edge_indices = list(
             chain(
-                *await asyncio.gather(*[_insert_identiy_edges(i, indices) for i, indices in enumerate(similar_indices)])
+                *await asyncio.gather(
+                    *[
+                        _insert_identiy_edges(i, indices)
+                        for i, indices in enumerate(similar_indices)
+                    ]
+                )
             )
         )
         new_edges_attrs: Dict[str, Any] = {
             "description": ["is"] * len(new_edge_indices),
             "chunks": [[]] * len(new_edge_indices),
         }
-        await self.graph_storage.insert_edges(indices=new_edge_indices, attrs=new_edges_attrs)
+        await self.graph_storage.insert_edges(
+            indices=new_edge_indices, attrs=new_edges_attrs
+        )
         progress_bar.update(1)
 
         # STEP: Save chunks
         # Insert chunks in chunk_storage
         progress_bar.set_description("Building... [saving chunks]")
         flattened_chunks = [chunk for chunks in documents for chunk in chunks]
-        await self.chunk_storage.upsert(keys=[chunk.id for chunk in flattened_chunks], values=flattened_chunks)
+        await self.chunk_storage.upsert(
+            keys=[chunk.id for chunk in flattened_chunks], values=flattened_chunks
+        )
         progress_bar.update(1)
         progress_bar.set_description("Building [done]")
 
@@ -351,24 +401,38 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
         if self.entity_storage.size == 0:
             return None
 
+        query_chunks = textwrap.wrap(query, width=2048, break_long_words=True)
+
         try:
             query_embeddings = await self.embedding_service.encode(
-                [f"{n}" for n in entities["named"]] + [f"[NONE] {n}" for n in entities["generic"]] + [query]
+                [f"{n}" for n in entities["named"]]
+                + [f"[NONE] {n}" for n in entities["generic"]]
+                + query_chunks
             )
             entity_scores: List[csr_matrix] = []
+
+            # Similarity-search over entity aliases
+            alias_entity_scores = await self._score_entities_by_aliases(query, entities)
+            if alias_entity_scores is not None and alias_entity_scores.nnz > 0:
+                entity_scores.append(alias_entity_scores)
+
             # Similarity-search over entities
             if len(entities["named"]) > 0:
-                vdb_entity_scores_by_named_entity = await self._score_entities_by_vectordb(
-                    query_embeddings=query_embeddings[: len(entities["named"])],
-                    top_k=1,
-                    threshold=self.query_similarity_score_threshold,
+                vdb_entity_scores_by_named_entity = (
+                    await self._score_entities_by_vectordb(
+                        query_embeddings=query_embeddings[: len(entities["named"])],
+                        top_k=1,
+                        threshold=self.query_similarity_score_threshold,
+                    )
                 )
                 entity_scores.append(vdb_entity_scores_by_named_entity)
 
-            vdb_entity_scores_by_generic_entity_and_query = await self._score_entities_by_vectordb(
-                query_embeddings=query_embeddings[len(entities["named"]) :],
-                top_k=20,
-                threshold=0.5,
+            vdb_entity_scores_by_generic_entity_and_query = (
+                await self._score_entities_by_vectordb(
+                    query_embeddings=query_embeddings[len(entities["named"]) :],
+                    top_k=20,
+                    threshold=0.5,
+                )
             )
             entity_scores.append(vdb_entity_scores_by_generic_entity_and_query)
 
@@ -377,7 +441,9 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
             if isinstance(vdb_entity_scores, int) or vdb_entity_scores.nnz == 0:
                 return None
         except Exception as e:
-            logger.error(f"Error during information extraction and scoring for query entities {entities}.\n{e}")
+            logger.error(
+                f"Error during information extraction and scoring for query entities {entities}.\n{e}"
+            )
             raise e
 
         # Score entities
@@ -386,7 +452,9 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
                 await self._score_entities_by_graph(entity_scores=vdb_entity_scores)
             )
         except Exception as e:
-            logger.error(f"Error during graph scoring for entities. Non-zero elements: {vdb_entity_scores.nnz}.\n{e}")
+            logger.error(
+                f"Error during graph scoring for entities. Non-zero elements: {vdb_entity_scores.nnz}.\n{e}"
+            )
             raise e
 
         try:
@@ -400,7 +468,9 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
 
             # Extract relevant relationships
             relation_scores = self.relation_ranking_policy(
-                await self._score_relationships_by_entities(entity_scores=graph_entity_scores)
+                await self._score_relationships_by_entities(
+                    entity_scores=graph_entity_scores
+                )
             )
 
             indices, scores = extract_sorted_scores(relation_scores)
@@ -412,7 +482,9 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
 
             # Extract relevant chunks
             chunk_scores = self.chunk_ranking_policy(
-                await self._score_chunks_by_relations(relationships_score=relation_scores)
+                await self._score_chunks_by_relations(
+                    relationships_score=relation_scores
+                )
             )
             indices, scores = extract_sorted_scores(chunk_scores)
             relevant_chunks: List[Tuple[TChunk, TScore]] = []
@@ -431,6 +503,55 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
 
     async def _get_entities_to_num_docs(self) -> Any:
         raise NotImplementedError
+
+    async def _score_entities_by_aliases(
+        self, query: str, entities: Dict[str, List[str]]
+    ) -> Optional[csr_matrix]:
+        """Score entities based on alias matches in the query or entity list."""
+        # Get all entity nodes
+        entity_count = await self.graph_storage.node_count()
+        if entity_count == 0:
+            return None
+
+        # Initialize sparse matrix for scores
+        data = []
+        row_indices = []
+        col_indices = []
+
+        # Combine all query terms to check against aliases
+        all_terms = set()
+        for named_entity in entities["named"]:
+            all_terms.update(named_entity.lower().split())
+        for generic_entity in entities["generic"]:
+            all_terms.update(generic_entity.lower().split())
+        all_terms.update(query.lower().split())
+
+        # Check each entity for aliases
+        for idx in range(entity_count):
+            entity = await self.graph_storage.get_node_by_index(idx)
+            if entity is None:
+                continue
+
+            # If entity has aliases attribute and it's not empty
+            if hasattr(entity, "aliases") and entity.aliases:
+                for alias in entity.aliases:
+                    alias_lower = alias.lower()
+                    # Check if any query term matches this alias
+                    if alias_lower in query.lower() or any(
+                        term == alias_lower for term in all_terms
+                    ):
+                        # Found a match - give this entity a high score (e.g., 0.9)
+                        data.append(0.9)
+                        row_indices.append(0)  # Only one row (single query)
+                        col_indices.append(idx)
+                        break
+
+        # Create sparse matrix from matches
+        if data:
+            return csr_matrix(
+                (data, (row_indices, col_indices)), shape=(1, entity_count)
+            )
+        return None
 
     async def _score_entities_by_vectordb(
         self,
@@ -452,33 +573,49 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
         if all_entity_probs_by_query_entity.shape[1] == 0:
             return all_entity_probs_by_query_entity
         # Normalize the scores
-        all_entity_probs_by_query_entity /= all_entity_probs_by_query_entity.sum(axis=1) + 1e-8
-        all_entity_weights: csr_matrix = all_entity_probs_by_query_entity.max(axis=0)  # (1, #all_entities)
+        all_entity_probs_by_query_entity /= (
+            all_entity_probs_by_query_entity.sum(axis=1) + 1e-8
+        )
+        all_entity_weights: csr_matrix = all_entity_probs_by_query_entity.max(
+            axis=0
+        )  # (1, #all_entities)
 
         if self.node_specificity:
-            all_entity_weights = all_entity_weights.multiply(1.0 / await self._get_entities_to_num_docs())
+            all_entity_weights = all_entity_weights.multiply(
+                1.0 / await self._get_entities_to_num_docs()
+            )
 
         return all_entity_weights
 
-    async def _score_entities_by_graph(self, entity_scores: Optional[csr_matrix]) -> csr_matrix:
+    async def _score_entities_by_graph(
+        self, entity_scores: Optional[csr_matrix]
+    ) -> csr_matrix:
         graph_weighted_scores = await self.graph_storage.score_nodes(entity_scores)
         node_scores = csr_matrix(graph_weighted_scores)  # (1, #entities)
         return node_scores
 
-    async def _score_relationships_by_entities(self, entity_scores: csr_matrix) -> csr_matrix:
+    async def _score_relationships_by_entities(
+        self, entity_scores: csr_matrix
+    ) -> csr_matrix:
         e2r = await self._entities_to_relationships.get()
         if e2r is None:
             logger.warning("No entities to relationships map was loaded.")
             return csr_matrix((1, await self.graph_storage.edge_count()))
 
-        return entity_scores.dot(e2r)  # (1, #entities) x (#entities, #relationships) => (1, #relationships)
+        return entity_scores.dot(
+            e2r
+        )  # (1, #entities) x (#entities, #relationships) => (1, #relationships)
 
-    async def _score_chunks_by_relations(self, relationships_score: csr_matrix) -> csr_matrix:
+    async def _score_chunks_by_relations(
+        self, relationships_score: csr_matrix
+    ) -> csr_matrix:
         c2r = await self._relationships_to_chunks.get()
         if c2r is None:
             logger.warning("No relationships to chunks map was loaded.")
             return csr_matrix((1, await self.chunk_storage.size()))
-        return relationships_score.dot(c2r)  # (1, #relationships) x (#relationships, #chunks) => (1, #chunks)
+        return relationships_score.dot(
+            c2r
+        )  # (1, #relationships) x (#relationships, #chunks) => (1, #chunks)
 
     ####################################################################################################
 
@@ -542,9 +679,13 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
             storage_inst.set_in_progress(True)
 
     async def insert_done(self):
-        await self._entities_to_relationships.set(await self.graph_storage.get_entities_to_relationships_map())
+        await self._entities_to_relationships.set(
+            await self.graph_storage.get_entities_to_relationships_map()
+        )
 
-        raw_relationships_to_chunks = await self.graph_storage.get_relationships_attrs(key="chunks")
+        raw_relationships_to_chunks = await self.graph_storage.get_relationships_attrs(
+            key="chunks"
+        )
         # Map Chunk IDs to indices
         raw_relationships_to_chunks = [
             [i for i in await self.chunk_storage.get_index(chunk_ids) if i is not None]
