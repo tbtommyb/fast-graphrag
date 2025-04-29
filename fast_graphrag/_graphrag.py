@@ -603,9 +603,38 @@ class BaseGraphRAG(Generic[GTEmbedding, GTHash, GTChunk, GTNode, GTEdge, GTId]):
         extracted_entities = await self.information_extraction_service.extract_entities_from_query(
             llm=self.llm_service, query=query, prompt_kwargs={}
         )
+        print(f"QUERY: {query}")
+        print(f"EXTRACTED ENTITIES: {extracted_entities}")
+
+        general_concepts = set()
+        specific_concepts = set()
+
+        # Identify general and specific concepts
+        for category in ["named", "generic"]:
+            if category in extracted_entities:
+                for entity in extracted_entities[category]:
+                    entity_lower = entity.lower()
+
+                    # Check for deep links pattern
+                    if "deep link" in entity_lower:
+                        if len(entity_lower.split()) > 2:  # More than just "deep links"
+                            specific_concepts.add("deep links")
+                        else:
+                            general_concepts.add("deep links")
+
+        # Ensure general concepts are included when specific ones are mentioned
+        for general in general_concepts:
+            for category in ["named", "generic"]:
+                if category in extracted_entities and general not in [e.lower() for e in extracted_entities[category]]:
+                    if specific_concepts and general in specific_concepts:
+                        extracted_entities[category].append(general)
+                        print(f"Added general concept '{general}' to balance specific mentions")
 
         # Retrieve relevant state
         context = await self.state_manager.get_context(query=query, entities=extracted_entities)
+        print(
+            f"RETRIEVED CONTEXT: {len(context.entities)} entities, {len(context.relations)} relations, {len(context.chunks)} chunks"
+        )
         if context is None:
             return TQueryResponse[GTNode, GTEdge, GTHash, GTChunk](
                 response=PROMPTS["fail_response"], context=TContext([], [], [])
@@ -620,6 +649,7 @@ class BaseGraphRAG(Generic[GTEmbedding, GTHash, GTChunk, GTNode, GTEdge, GTId]):
             },
             output_context_str=not params.only_context,
         )
+        print(f"TRUNCATED CONTEXT LENGTH: {len(context_str)}")
         if params.only_context:
             answer = ""
         else:

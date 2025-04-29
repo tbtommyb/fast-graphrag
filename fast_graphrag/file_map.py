@@ -177,9 +177,7 @@ class FileMapper:
         visit(node)
         return sorted(identifiers), scopes
 
-    def _build_scope_tree(
-        self, node: Any, source_bytes: bytes, filepath: str
-    ) -> Optional[Scope]:
+    def _build_scope_tree(self, node: Any, source_bytes: bytes, filepath: str) -> Optional[Scope]:
         """Build scope tree focusing only on named declarations."""
         if node in self.seen:
             return None
@@ -196,9 +194,7 @@ class FileMapper:
                 child_identifiers.update(name for name in child.identifiers)
                 # Recursively add identifiers from nested scopes
                 for nested_child in child.children:
-                    child_identifiers.update(
-                        self._get_all_child_identifiers(nested_child)
-                    )
+                    child_identifiers.update(self._get_all_child_identifiers(nested_child))
 
             # Filter out identifiers that appear in child scopes
             return [name for name in identifiers if name not in child_identifiers]
@@ -226,22 +222,15 @@ class FileMapper:
             "macro_definition": "macro",
         }
 
-        if (
-            node.type == "property_identifier"
-            or node.type == "private_property_identifier"
-        ):
+        if node.type == "property_identifier" or node.type == "private_property_identifier":
             next_sibling = node.next_sibling
             if next_sibling and next_sibling.type == "=":
                 next_next = next_sibling.next_sibling
                 if next_next and next_next.type == "arrow_function":
                     name = node.text.decode("utf-8")
-                    identifiers, child_scopes = self._collect_identifiers(
-                        next_next, source_bytes, filepath
-                    )
+                    identifiers, child_scopes = self._collect_identifiers(next_next, source_bytes, filepath)
 
-                    filtered_identifiers = filter_scope_identifiers(
-                        identifiers, child_scopes
-                    )
+                    filtered_identifiers = filter_scope_identifiers(identifiers, child_scopes)
 
                     return Scope(
                         kind="method",
@@ -264,13 +253,9 @@ class FileMapper:
                     arrow_function = child
 
             if name and arrow_function:
-                identifiers, child_scopes = self._collect_identifiers(
-                    arrow_function, source_bytes, filepath
-                )
+                identifiers, child_scopes = self._collect_identifiers(arrow_function, source_bytes, filepath)
 
-                filtered_identifiers = filter_scope_identifiers(
-                    identifiers, child_scopes
-                )
+                filtered_identifiers = filter_scope_identifiers(identifiers, child_scopes)
 
                 return Scope(
                     kind="function",
@@ -295,12 +280,8 @@ class FileMapper:
                     break
 
             if impl_type:
-                identifiers, child_scopes = self._collect_identifiers(
-                    node, source_bytes, filepath
-                )
-                filtered_identifiers = filter_scope_identifiers(
-                    identifiers, child_scopes
-                )
+                identifiers, child_scopes = self._collect_identifiers(node, source_bytes, filepath)
+                filtered_identifiers = filter_scope_identifiers(identifiers, child_scopes)
 
                 return Scope(
                     kind="impl",
@@ -326,9 +307,7 @@ class FileMapper:
             name = filepath
 
         # Collect identifiers and child scopes
-        identifiers, child_scopes = self._collect_identifiers(
-            node, source_bytes, filepath
-        )
+        identifiers, child_scopes = self._collect_identifiers(node, source_bytes, filepath)
 
         filtered_identifiers = filter_scope_identifiers(identifiers, child_scopes)
 
@@ -437,19 +416,13 @@ class FileMapper:
                     if current_length + len(current_line) + 100 > char_limit:
                         # Find break point
                         found_breakpoint = False
-                        for i in range(
-                            1, len(identifiers)
-                        ):  # Start from 1 to ensure progress
+                        for i in range(1, len(identifiers)):  # Start from 1 to ensure progress
                             partial_line = ", ".join(identifiers[:i])
                             if current_length + len(partial_line) + 100 > char_limit:
                                 # We found the last index that will fit
                                 if i > 1:
-                                    add_to_chunk(
-                                        ", ".join(identifiers[: i - 1]), indent + 2
-                                    )
-                                    identifiers = identifiers[
-                                        i - 1 :
-                                    ]  # Update identifiers
+                                    add_to_chunk(", ".join(identifiers[: i - 1]), indent + 2)
+                                    identifiers = identifiers[i - 1 :]  # Update identifiers
                                     found_breakpoint = True
                                     flush_chunk()
                                     break
@@ -491,9 +464,7 @@ class FileMapper:
 
 def main():
     mapper = FileMapper()
-    parser = argparse.ArgumentParser(
-        description="Extract condensed filemap from TS/TSX/Rust file"
-    )
+    parser = argparse.ArgumentParser(description="Extract condensed filemap from TS/TSX/Rust file")
     parser.add_argument("--path", required=True, type=str, help="File to analyse")
     args = parser.parse_args()
 

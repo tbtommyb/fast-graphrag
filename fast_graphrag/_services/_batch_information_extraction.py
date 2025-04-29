@@ -151,9 +151,7 @@ TOOLS = [
 
 
 @dataclass
-class BatchInformationExtractionService(
-    BaseInformationExtractionService[TChunk, TEntity, TRelation, GTId]
-):
+class BatchInformationExtractionService(BaseInformationExtractionService[TChunk, TEntity, TRelation, GTId]):
     """Batch entity and relationship extractor."""
 
     def prepare_batch_extraction_prompt(
@@ -196,11 +194,7 @@ class BatchInformationExtractionService(
                                     messages=[
                                         TClaudeMessage(
                                             role="user",
-                                            content=[
-                                                TClaudeContentBlock(
-                                                    type="text", text=prompt
-                                                )
-                                            ],
+                                            content=[TClaudeContentBlock(type="text", text=prompt)],
                                         )
                                     ],
                                 ),
@@ -219,9 +213,7 @@ class BatchInformationExtractionService(
         extracted_content: Dict[str, TBedrockBatchOutput],
         entity_types: List[str],
     ) -> List[asyncio.Future[Optional[BaseGraphStorage[TEntity, TRelation, GTId]]]]:
-        _clean_entity_types = [
-            re.sub("[ _]", "", entity_type).upper() for entity_type in entity_types
-        ]
+        _clean_entity_types = [re.sub("[ _]", "", entity_type).upper() for entity_type in entity_types]
 
         list_of_merge_tasks = []
 
@@ -258,21 +250,15 @@ class BatchInformationExtractionService(
                 ]
                 relationships = []
                 extracted_relationships = extraction_data.get("relationships", [])
-                extracted_other_relationships = extraction_data.get(
-                    "other_relationships", []
-                )
-                if isinstance(extracted_relationships, list) and isinstance(
-                    extracted_other_relationships, list
-                ):
+                extracted_other_relationships = extraction_data.get("other_relationships", [])
+                if isinstance(extracted_relationships, list) and isinstance(extracted_other_relationships, list):
                     relationships = [
                         TRelation(
                             source=x["source"],
                             target=x["target"],
                             description=x["desc"],
                         )
-                        for x in (
-                            extracted_relationships + extracted_other_relationships
-                        )
+                        for x in (extracted_relationships + extracted_other_relationships)
                         if all(key in x for key in ["source", "target", "desc"])
                     ]
                 else:
@@ -280,10 +266,7 @@ class BatchInformationExtractionService(
                 graph = TGraph(entities=entities, relationships=relationships)
 
                 for entity in graph.entities:
-                    if (
-                        re.sub("[ _]", "", entity.type).upper()
-                        not in _clean_entity_types
-                    ):
+                    if re.sub("[ _]", "", entity.type).upper() not in _clean_entity_types:
                         entity.type = "UNKNOWN"
                 for relationship in graph.relationships:
                     relationship.chunks = [chunk.id]
@@ -292,22 +275,16 @@ class BatchInformationExtractionService(
 
         return list_of_merge_tasks
 
-    async def _merge(
-        self, llm: BaseLLMService, graphs: List[TGraph]
-    ) -> BaseGraphStorage[TEntity, TRelation, GTId]:
+    async def _merge(self, llm: BaseLLMService, graphs: List[TGraph]) -> BaseGraphStorage[TEntity, TRelation, GTId]:
         """"""
-        graph_storage = IGraphStorage[TEntity, TRelation, GTId](
-            config=IGraphStorageConfig(TEntity, TRelation)
-        )
+        graph_storage = IGraphStorage[TEntity, TRelation, GTId](config=IGraphStorageConfig(TEntity, TRelation))
 
         await graph_storage.insert_start()
 
         try:
             # This is synchronous since each sub graph is inserted into the graph storage and conflicts are resolved
             for graph in graphs:
-                await self.graph_upsert(
-                    llm, graph_storage, graph.entities, graph.relationships
-                )
+                await self.graph_upsert(llm, graph_storage, graph.entities, graph.relationships)
         finally:
             await graph_storage.insert_done()
 

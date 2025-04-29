@@ -114,10 +114,7 @@ def gather_files(directory_path, extensions, chunk_size=3600):
     output = []
     mapper = FileMapper()
     files = sum(
-        [
-            glob.glob(os.path.join(directory_path, f"**/*.{ext}"), recursive=True)
-            for ext in extensions
-        ],
+        [glob.glob(os.path.join(directory_path, f"**/*.{ext}"), recursive=True) for ext in extensions],
         [],
     )
 
@@ -137,9 +134,7 @@ def gather_files(directory_path, extensions, chunk_size=3600):
                     base_dir_idx = abs_path.find(BASE_DIR)
 
                     if base_dir_idx != -1:
-                        rel_path = abs_path[base_dir_idx + len(BASE_DIR) :].lstrip(
-                            os.sep
-                        )
+                        rel_path = abs_path[base_dir_idx + len(BASE_DIR) :].lstrip(os.sep)
                     else:
                         rel_path = os.path.relpath(file_path, directory_path)
 
@@ -147,8 +142,7 @@ def gather_files(directory_path, extensions, chunk_size=3600):
                     if filemap:
                         filemap_chunks = mapper.format_scope_chunks(
                             filemap,
-                            chunk_size
-                            - 600,  # hardcode 600 to work around ineffective chunking
+                            chunk_size - 600,  # hardcode 600 to work around ineffective chunking
                         )
                         output.extend(filemap_chunks)
                 output.append(content)
@@ -160,10 +154,7 @@ def gather_files(directory_path, extensions, chunk_size=3600):
 
 def insert_files(directory_path, extensions, grag, max_retries=3, backoff_base=2):
     files = sum(
-        [
-            glob.glob(os.path.join(directory_path, f"**/*.{ext}"), recursive=True)
-            for ext in extensions
-        ],
+        [glob.glob(os.path.join(directory_path, f"**/*.{ext}"), recursive=True) for ext in extensions],
         [],
     )
 
@@ -183,9 +174,7 @@ def insert_files(directory_path, extensions, grag, max_retries=3, backoff_base=2
                 file_content = f"// <filepath>{file_path}</filepath>\n\n{content}"
                 grag.insert(file_content)
                 processed_files += 1
-                print(
-                    f"Processed {processed_files}/{total_files} files ({(processed_files / total_files) * 100:.1f}%)"
-                )
+                print(f"Processed {processed_files}/{total_files} files ({(processed_files / total_files) * 100:.1f}%)")
         except Exception as e:
             print(f"[insert_files] Error processing file {file_path}: {e}")
             print(f"Stack trace: {traceback.format_exc()}")
@@ -204,16 +193,12 @@ def insert_files(directory_path, extensions, grag, max_retries=3, backoff_base=2
 
         for file_path, attempts in failed_files:
             if attempts > max_retries:
-                print(
-                    f"[insert_files] Permanently failed to process {file_path} after {max_retries} attempts"
-                )
+                print(f"[insert_files] Permanently failed to process {file_path} after {max_retries} attempts")
                 continue
 
             # Wait with exponential backoff
             wait_time = backoff_base**attempts
-            print(
-                f"[insert_files] Retrying {file_path} (attempt {attempts}) after {wait_time}s delay"
-            )
+            print(f"[insert_files] Retrying {file_path} (attempt {attempts}) after {wait_time}s delay")
             time.sleep(wait_time)
 
             try:
@@ -228,13 +213,9 @@ def insert_files(directory_path, extensions, grag, max_retries=3, backoff_base=2
 
         failed_files = still_failed
         if failed_files:
-            print(
-                f"[insert_files] {len(failed_files)} files still failing, continuing retries..."
-            )
+            print(f"[insert_files] {len(failed_files)} files still failing, continuing retries...")
 
-    print(
-        f"\nCompleted processing {total_files} files with {len(failed_files)} permanent failures"
-    )
+    print(f"\nCompleted processing {total_files} files with {len(failed_files)} permanent failures")
 
 
 def interactive_questions(grag):
@@ -291,9 +272,7 @@ def create_unique_job_name(prefix: str = "bedrock-batch", max_length: int = 64) 
     return job_name
 
 
-def split_file_into_batches(
-    file_path: Path, min_lines: int, max_lines: int
-) -> list[list[str]]:
+def split_file_into_batches(file_path: Path, min_lines: int, max_lines: int) -> list[list[str]]:
     """
     Split a file into batches based on number of lines
 
@@ -338,13 +317,14 @@ def split_file_into_batches(
     return batches
 
 
-def upload_to_s3(file_path: Union[str, Path], bucket: str, key: str = None) -> bool:
+def upload_to_s3(file_path: Union[str, Path], bucket: str, work_dir: str, key: str = None) -> bool:
     """
     Upload a file to S3
 
     Args:
         file_path: Local path to file to upload
         bucket: S3 bucket name
+        work_dir: Working directory to use as path prefix
         key: S3 key (path) to upload to. If None, uses filename
 
     Returns:
@@ -358,9 +338,13 @@ def upload_to_s3(file_path: Union[str, Path], bucket: str, key: str = None) -> b
     if key is None:
         key = file_path.name
 
+    # Create S3 key with work_dir prefix
+    work_dir = Path(work_dir).name  # Get just the directory name
+    s3_key = f"{work_dir}/{key}"
+
     try:
-        s3_client.upload_file(str(file_path), bucket, key)
-        print(f"Successfully uploaded {file_path} to s3://{bucket}/{key}")
+        s3_client.upload_file(str(file_path), bucket, s3_key)
+        print(f"Successfully uploaded {file_path} to s3://{bucket}/{s3_key}")
         return True
     except Exception as e:
         print(f"Failed to upload file: {e}")
@@ -368,13 +352,13 @@ def upload_to_s3(file_path: Union[str, Path], bucket: str, key: str = None) -> b
 
 
 def create_bedrock_jobs(
-    base_path: Path, file_name: str, job_name: str, model_id: str
+    base_path: Path, file_name: str, job_name: str, model_id: str, work_dir: str
 ) -> list[tuple[int, str]]:
-    """ """
+    """
+    Create Bedrock batch jobs with work_dir-prefixed S3 paths
+    """
     file_path = base_path / file_name
-    batches = split_file_into_batches(
-        file_path, BEDROCK_BATCH_MIN_PROMPTS, BEDROCK_BATCH_SIZE
-    )
+    batches = split_file_into_batches(file_path, BEDROCK_BATCH_MIN_PROMPTS, BEDROCK_BATCH_SIZE)
     job_info = []
 
     # Split the filename and extension
@@ -382,31 +366,26 @@ def create_bedrock_jobs(
     base_name = name_parts[0]
     extension = name_parts[1] if len(name_parts) > 1 else ""
 
+    work_dir = Path(work_dir).name  # Get just the directory name
+
     for i, batch in enumerate(batches):
         if len(batch) < 100:
-            print(
-                f"ERROR: batch file {base_name} has fewer than 100 entries. Bedrock will reject"
-            )
+            print(f"ERROR: batch file {base_name} has fewer than 100 entries. Bedrock will reject")
             raise Exception
         if len(batches) > 1:
             batch_file_name = f"{base_name}.batch{i}.{extension}"
             batch_path = base_path / batch_file_name
-
             with open(batch_path, "w") as f:
                 f.writelines(batch)
         else:
             batch_file_name = f"{base_name}.{extension}"
             batch_path = base_path / batch_file_name
 
-        # Upload and create job
-        upload_to_s3(batch_path, S3_BUCKET)
+        # Upload with work_dir prefix
+        upload_to_s3(batch_path, S3_BUCKET, work_dir, batch_file_name)
 
-        input_data_config = {
-            "s3InputDataConfig": {"s3Uri": f"s3://{S3_BUCKET}/{batch_file_name}"}
-        }
-        output_data_config = {
-            "s3OutputDataConfig": {"s3Uri": f"s3://{S3_BUCKET}/claude-output/"}
-        }
+        input_data_config = {"s3InputDataConfig": {"s3Uri": f"s3://{S3_BUCKET}/{work_dir}/{batch_file_name}"}}
+        output_data_config = {"s3OutputDataConfig": {"s3Uri": f"s3://{S3_BUCKET}/{work_dir}/claude-output/"}}
 
         response = bedrock_client.create_model_invocation_job(
             roleArn=SERVICE_ROLE,
@@ -417,9 +396,6 @@ def create_bedrock_jobs(
         )
 
         job_info.append(response.get("jobArn"))
-
-        # Clean up temporary batch file
-        # batch_path.unlink()
 
     return job_info
 
@@ -460,19 +436,22 @@ def wait_for_batch_jobs(
                 print(f"Job {job_arn} completed")
 
                 # Download output
-                output_s3_uri = response["outputDataConfig"]["s3OutputDataConfig"][
-                    "s3Uri"
-                ]
+                output_s3_uri = response["outputDataConfig"]["s3OutputDataConfig"]["s3Uri"]
                 s3_parts = output_s3_uri.replace("s3://", "").split("/")
                 bucket = s3_parts[0]
                 folder_name = job_arn.split("/")[-1]
+
+                work_dir = s3_parts[1]
+
                 key = "/".join(
                     [
+                        work_dir,
                         "claude-output",
                         folder_name,
                         output_file_name[: output_file_name.rindex(".")],
                     ]
                 )
+
                 if len(job_arns) > 1:
                     key = insert_batch_number(key, i)
 
@@ -480,20 +459,18 @@ def wait_for_batch_jobs(
                     temp_file = output_dir / f"{output_file_name}.batch{i}"
                 else:
                     temp_file = output_dir / f"{output_file_name}"
+
+                print(f"Downloading from s3://{bucket}/{key} to {temp_file}")
                 s3_client.download_file(Bucket=bucket, Key=key, Filename=str(temp_file))
                 temp_files[job_arn] = temp_file
                 completed_jobs.add(job_arn)
 
             elif status in ["Expired", "Failed", "Stopped"]:
-                print(
-                    f"Job {job_arn} failed: {response.get('failureReason', 'Unknown error')}"
-                )
+                print(f"Job {job_arn} failed: {response.get('failureReason', 'Unknown error')}")
                 return False
 
         if len(completed_jobs) < len(job_arns):
-            print(
-                f"Waiting for {len(job_arns) - len(completed_jobs)} jobs to complete..."
-            )
+            print(f"Waiting for {len(job_arns) - len(completed_jobs)} jobs to complete...")
             time.sleep(poll_interval_seconds)
 
     if len(job_arns) > 1:
@@ -503,7 +480,6 @@ def wait_for_batch_jobs(
                 temp_file_path = temp_files[job]
                 with open(temp_file_path, "r") as infile:
                     outfile.write(infile.read())
-                # Call unlink on the Path object, not the file object
                 temp_file_path.unlink()  # Clean up temp files
 
     return True
@@ -532,9 +508,7 @@ def read_file_lines(path):
 
 
 class JobsManager:
-    def __init__(
-        self, source_dir: Path, work_dir: Path, base_path: Path, model_id: str
-    ):
+    def __init__(self, source_dir: Path, work_dir: Path, base_path: Path, model_id: str):
         self.job_arns_file = Path(work_dir) / "jobArns.json"
         self.source_dir = source_dir
         self.work_dir = work_dir
@@ -558,7 +532,11 @@ class JobsManager:
             if callback:
                 callback()
             job_arns = create_bedrock_jobs(
-                self.base_path, prompt_file_name, task_name, self.model_id
+                self.base_path,
+                prompt_file_name,
+                task_name,
+                self.model_id,
+                self.work_dir,  # Pass work_dir
             )
             self.update_arns(task_name, job_arns)
         arns = self.arns[task_name]
@@ -568,9 +546,7 @@ class JobsManager:
             return read_file_lines(self.base_path / file_out)
 
     def wait_for(self, arns: list, out_file_name: str, poll_interval_secs: int = 300):
-        return wait_for_batch_jobs(
-            arns, self.base_path, out_file_name, poll_interval_secs
-        )
+        return wait_for_batch_jobs(arns, self.base_path, out_file_name, poll_interval_secs)
 
 
 def write_file(path, content):
@@ -608,12 +584,8 @@ def get_llm_config(llm_choice):
 
 def main():
     parser = argparse.ArgumentParser(description="Create knowledge graph for LLM RAG")
-    parser.add_argument(
-        "--path", required=True, type=str, help="Directory to source files from"
-    )
-    parser.add_argument(
-        "--work_dir", required=True, type=str, help="Directory to store computed data"
-    )
+    parser.add_argument("--path", required=True, type=str, help="Directory to source files from")
+    parser.add_argument("--work_dir", required=True, type=str, help="Directory to store computed data")
     parser.add_argument(
         "--query",
         action=argparse.BooleanOptionalAction,
@@ -675,9 +647,7 @@ def main():
     base_path = Path(args.work_dir) / "batch_prompts"
     base_path.mkdir(parents=True, exist_ok=True)
 
-    jobs_manager = JobsManager(
-        source_directory, args.work_dir, base_path, llm_config["model"]
-    )
+    jobs_manager = JobsManager(source_directory, args.work_dir, base_path, llm_config["model"])
 
     if args.build:
         print(f"Beginning {'batch ' if args.batch else ''}job for: {source_directory}")
@@ -698,24 +668,18 @@ def main():
                 file_contents, base_path / extraction_prompt_file_name
             )
 
-            extract_output = jobs_manager.get_or_create(
-                "batch-extract", extraction_prompt_file_name
-            )
+            extract_output = jobs_manager.get_or_create("batch-extract", extraction_prompt_file_name)
             if not extract_output:
                 return
 
             subgraphs = grag.batch_insert(chunks, extract_output)
             # TODO: handle updates to existing graph
-            graphs = grag.batch_generate_graphs(
-                subgraphs, chunks, Path(args.work_dir) / "graphs_cache.pkl"
-            )
+            graphs = grag.batch_generate_graphs(subgraphs, chunks, Path(args.work_dir) / "graphs_cache.pkl")
 
             summarize_nodes_output = jobs_manager.get_or_create(
                 "summarize-nodes-description",
                 summarize_nodes_prompt_file_name,
-                lambda: grag.prepare_batch_node_summaries(
-                    graphs, base_path / summarize_nodes_prompt_file_name
-                ),
+                lambda: grag.prepare_batch_node_summaries(graphs, base_path / summarize_nodes_prompt_file_name),
             )
             if not summarize_nodes_output:
                 return
@@ -778,12 +742,8 @@ def init_grag(work_dir: str, llm: str, client: str = "js"):
 
 def serve():
     parser = argparse.ArgumentParser(description="Serve knowledge graph for LLM RAG")
-    parser.add_argument(
-        "--path", required=True, type=str, help="Directory to source files from"
-    )
-    parser.add_argument(
-        "--work_dir", required=True, type=str, help="Directory to store computed data"
-    )
+    parser.add_argument("--path", required=True, type=str, help="Directory to source files from")
+    parser.add_argument("--work_dir", required=True, type=str, help="Directory to store computed data")
     parser.add_argument(
         "--llm",
         choices=["qwen", "sonnet37", "sonnetv2", "haiku"],

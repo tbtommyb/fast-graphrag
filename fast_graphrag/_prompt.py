@@ -5,9 +5,7 @@ from typing import Any, Dict
 PROMPTS: Dict[str, Any] = {}
 
 ## NEW
-PROMPTS[
-    "entity_relationship_extraction"
-] = """# DOMAIN PROMPT
+PROMPTS["entity_relationship_extraction"] = """# DOMAIN PROMPT
 {domain}
 
 # GOAL
