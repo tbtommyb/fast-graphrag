@@ -49,7 +49,7 @@ from ._base import BaseStateManagerService
 class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THash, TChunk, TId, TEmbedding]):
     blob_storage_cls: Type[BaseBlobStorage[csr_matrix]] = field(default=PickleBlobStorage)
     insert_similarity_score_threshold: float = field(default=0.9)
-    query_similarity_score_threshold: Optional[float] = field(default=0.7)
+    query_similarity_score_threshold: Optional[float] = field(default=0.5)
 
     def __post_init__(self):
         assert self.workspace is not None, "Workspace must be provided."
@@ -345,6 +345,63 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
         progress_bar.update(1)
         progress_bar.set_description("Building [done]")
 
+    async def _enhance_ranked_entities_with_exploration(self, ranked_scores: csr_matrix) -> csr_matrix:
+        """Apply bidirectional graph exploration when ranking yields too few entities."""
+        if ranked_scores.nnz < 15:
+            print(f"Few entities after ranking ({ranked_scores.nnz}), applying graph exploration")
+
+            # Get entities we've found so far
+            seed_entities = list(ranked_scores.indices)
+            print(f"Found {len(seed_entities)} seed entities for exploration")
+
+            # Use entity-to-relation mapping to find related entities
+            e2r = await self._entities_to_relationships.get()
+            if e2r is not None:
+                # Find relationships connected to our seed entities
+                seed_entity_slice = csr_matrix(
+                    (
+                        np.ones(len(seed_entities)),
+                        (np.zeros(len(seed_entities)), seed_entities),
+                    ),
+                    shape=(1, e2r.shape[0]),
+                )
+
+                # Get relationships connected to our entities
+                connected_relations = seed_entity_slice.dot(e2r)
+
+                # Now find entities connected to those relationships
+                connected_entities = connected_relations.dot(e2r.transpose())
+
+                # Extract indices of connected entities
+                neighbor_indices = set(connected_entities.indices) - set(seed_entities)
+                print(f"Found {len(neighbor_indices)} potential related entities")
+
+                if neighbor_indices:
+                    # Create scores for these related entities
+                    min_score = ranked_scores.data.min() if len(ranked_scores.data) > 0 else 0.01
+                    neighbor_data = np.array([0.5 * min_score] * len(neighbor_indices))
+                    neighbor_indices_array = np.array(list(neighbor_indices))
+
+                    # Combine with original entities
+                    expanded_indices = np.concatenate([ranked_scores.indices, neighbor_indices_array])
+                    expanded_data = np.concatenate([ranked_scores.data, neighbor_data])
+
+                    # Create new expanded score matrix
+                    expanded_scores = csr_matrix(
+                        (
+                            expanded_data,
+                            (np.zeros_like(expanded_indices), expanded_indices),
+                        ),
+                        shape=ranked_scores.shape,
+                    )
+
+                    print(
+                        f"Expanded from {ranked_scores.nnz} to {len(expanded_indices)} entities via relation exploration"
+                    )
+                    return expanded_scores
+
+        return ranked_scores
+
     async def get_context(
         self, query: str, entities: Dict[str, List[str]]
     ) -> Optional[TContext[TEntity, TRelation, THash, TChunk]]:
@@ -355,7 +412,7 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
 
         try:
             query_embeddings = await self.embedding_service.encode(
-                [f"{n}" for n in entities["named"]] + [f"[NONE] {n}" for n in entities["generic"]] + query_chunks
+                [f"{n}" for n in entities["named"]] + [f"{n}" for n in entities["generic"]] + query_chunks
             )
             entity_scores: List[csr_matrix] = []
 
@@ -376,12 +433,17 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
             vdb_entity_scores_by_generic_entity_and_query = await self._score_entities_by_vectordb(
                 query_embeddings=query_embeddings[len(entities["named"]) :],
                 top_k=20,
-                threshold=0.5,
+                threshold=self.query_similarity_score_threshold,
             )
             entity_scores.append(vdb_entity_scores_by_generic_entity_and_query)
 
             vdb_entity_scores = vstack(entity_scores).max(axis=0)
             print(f"ENTITY VECTORDB SCORES: Non-zero elements: {vdb_entity_scores.nnz}")
+
+            self._last_vdb_entity_indices = (
+                vdb_entity_scores.indices.copy() if hasattr(vdb_entity_scores, "indices") else []
+            )
+            self._last_vdb_entity_scores = vdb_entity_scores.data.copy() if hasattr(vdb_entity_scores, "data") else []
 
             if isinstance(vdb_entity_scores, int) or vdb_entity_scores.nnz == 0:
                 return None
@@ -395,6 +457,8 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
                 await self._score_entities_by_graph(entity_scores=vdb_entity_scores)
             )
             print(f"GRAPH ENTITY SCORES: Non-zero elements: {graph_entity_scores.nnz}")
+
+            graph_entity_scores = await self._enhance_ranked_entities_with_exploration(graph_entity_scores)
         except Exception as e:
             logger.error(f"Error during graph scoring for entities. Non-zero elements: {vdb_entity_scores.nnz}.\n{e}")
             raise e
@@ -482,7 +546,9 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
                 for alias in entity.aliases:
                     alias_lower = alias.lower()
                     # Check if any query term matches this alias
-                    if alias_lower in query.lower() or any(term == alias_lower for term in all_terms):
+                    if alias_lower in query.lower() or any(
+                        term in alias_lower or alias_lower in term for term in all_terms
+                    ):
                         # Found a match - give this entity a high score (e.g., 0.9)
                         data.append(0.9)
                         row_indices.append(0)  # Only one row (single query)
@@ -517,6 +583,26 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
         all_entity_probs_by_query_entity /= all_entity_probs_by_query_entity.sum(axis=1) + 1e-8
         all_entity_weights: csr_matrix = all_entity_probs_by_query_entity.max(axis=0)  # (1, #all_entities)
 
+        if hasattr(all_entity_weights, "indices") and len(all_entity_weights.indices) > 0:
+            # Log top entity matches for debugging
+            logger.info("Logging top entity matches for embeddings:")
+
+            # Get indices and scores of top entities
+            top_indices = all_entity_weights.indices[: min(10, len(all_entity_weights.indices))]
+            top_scores = all_entity_weights.data[: min(10, len(all_entity_weights.data))]
+
+            # Log each entity match
+            for i, (entity_idx, score) in enumerate(zip(top_indices, top_scores)):
+                try:
+                    entity = await self.graph_storage.get_node_by_index(entity_idx)
+                    entity_name = entity.name if entity is not None else "unknown"
+                    logger.info(f"  Match #{i + 1}: Entity '{entity_name}' (ID: {entity_idx}) with score {score:.6f}")
+                except Exception as e:
+                    logger.error(f"  Error getting entity {entity_idx}: {e}")
+
+            # Additional info about matching thresholds
+            logger.info(f"Using similarity threshold: {threshold}")
+
         if self.node_specificity:
             all_entity_weights = all_entity_weights.multiply(1.0 / await self._get_entities_to_num_docs())
 
@@ -524,34 +610,168 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
 
     async def _score_entities_by_graph_original(self, entity_scores: Optional[csr_matrix]) -> csr_matrix:
         graph_weighted_scores = await self.graph_storage.score_nodes(entity_scores)
+
+        # Only keep the top N% of scores or scores above a meaningful threshold
+        if isinstance(graph_weighted_scores, csr_matrix):
+            # Find a percentile-based threshold (e.g., only keep top 2% of non-zero values)
+            if graph_weighted_scores.nnz > 0:
+                # Get all non-zero values
+                non_zero_values = graph_weighted_scores.data
+                # Calculate threshold at 98th percentile of non-zero values
+                if len(non_zero_values) > 100:  # Only if we have enough data points
+                    threshold = np.percentile(non_zero_values, 98)
+                    # Apply threshold
+                    graph_weighted_scores.data[graph_weighted_scores.data < threshold] = 0
+                    graph_weighted_scores.eliminate_zeros()
+                    print(
+                        f"Applied 98th percentile threshold: {threshold:.6f}, kept {graph_weighted_scores.nnz} entities"
+                    )
+
         node_scores = csr_matrix(graph_weighted_scores)  # (1, #entities)
         return node_scores
 
     async def _score_entities_by_graph(self, entity_scores: Optional[csr_matrix]) -> csr_matrix:
-        graph_weighted_scores = await self._score_entities_by_graph_original(entity_scores)  # Original logic
-        node_scores = csr_matrix(graph_weighted_scores)  # (1, #entities)
+        # Get original number of non-zero elements before graph scoring
+        original_nnz = entity_scores.nnz if entity_scores is not None else 0
 
-        # If we have few entities (<10), try to include more potentially relevant ones
-        if node_scores.nnz < 10:
-            print(f"Found only {node_scores.nnz} entities after graph scoring, attempting to include more...")
+        # DEBUGGING - Print matrix details before processing
+        print(f"DEBUG: entity_scores type: {type(entity_scores)}")
+        print(f"DEBUG: entity_scores.nnz: {original_nnz}")
+        print(f"DEBUG: entity_scores shape: {entity_scores.shape if entity_scores is not None else 'None'}")
+        print(
+            f"DEBUG: entity_scores indices len: {len(entity_scores.indices) if hasattr(entity_scores, 'indices') else 'no indices'}"
+        )
 
-            # Get original entity scores before policy filtering
-            original_scores = entity_scores.copy()
+        graph_weighted_scores = await self._score_entities_by_graph_original(entity_scores)
 
-            # Apply a different threshold to include more entities
-            if original_scores.nnz > 0:
-                max_score = original_scores.data.max()
-                lower_threshold = max_score * 0.3  # 30% of max score
+        # DEBUGGING - Print the intermediate matrix
+        print(f"DEBUG: graph_weighted_scores type: {type(graph_weighted_scores)}")
+        print(
+            f"DEBUG: graph_weighted_scores shape: {graph_weighted_scores.shape if hasattr(graph_weighted_scores, 'shape') else 'no shape'}"
+        )
+        if hasattr(graph_weighted_scores, "nnz"):
+            print(f"DEBUG: graph_weighted_scores.nnz: {graph_weighted_scores.nnz}")
+        else:
+            print(f"DEBUG: graph_weighted_scores has no nnz property")
 
-                # Use original scores with lower threshold
-                boost_scores = original_scores.copy()
-                boost_scores.data[boost_scores.data < lower_threshold] = 0
-                boost_scores.eliminate_zeros()
+        # Create node_scores with guaranteed sparsity
+        try:
+            # Force to CSR and eliminate zeros
+            node_scores = csr_matrix(graph_weighted_scores)
 
-                # Combine with original node scores
-                if boost_scores.nnz > node_scores.nnz:
-                    print(f"Expanded entity selection from {node_scores.nnz} to {boost_scores.nnz}")
-                    return boost_scores
+            # Set very small values to zero explicitly
+            node_scores.data[node_scores.data < 0.0001] = 0
+            node_scores.eliminate_zeros()
+
+            # DEBUGGING - Check what we actually have now
+            print(f"DEBUG: node_scores type after cleanup: {type(node_scores)}")
+            print(f"DEBUG: node_scores.nnz after cleanup: {node_scores.nnz}")
+            print(f"DEBUG: node_scores.shape after cleanup: {node_scores.shape}")
+            print(f"DEBUG: non-zero count in data: {sum(1 for x in node_scores.data if x > 0)}")
+
+            # Use a manual count for the filtering ratio
+            significant_nonzeros = sum(1 for x in node_scores.data if x > 0)
+            filtering_ratio = significant_nonzeros / original_nnz if original_nnz > 0 else 0
+            print(f"Graph filtering ratio: {filtering_ratio:.4f} ({significant_nonzeros}/{original_nnz} entities kept)")
+        except Exception as e:
+            print(f"ERROR during node_scores processing: {e}")
+            # Create a fallback sparse matrix if there was an error
+            node_scores = csr_matrix((1, await self.graph_storage.node_count()))
+
+        # Calculate filtering ratio correctly
+        threshold = 0.0001  # Adjust as needed
+        significant_nonzeros = sum(1 for x in node_scores.data if x > threshold)
+        filtering_ratio = significant_nonzeros / original_nnz if original_nnz > 0 else 0
+        print(f"Graph filtering ratio: {filtering_ratio:.4f} ({significant_nonzeros}/{original_nnz} entities kept)")
+
+        # If filtering is too aggressive
+        if original_nnz > 20 and filtering_ratio < 0.3:
+            print("Graph filtering too aggressive, preserving more entities")
+
+            try:
+                # Safely access indices - make sure both matrices have indices attribute
+                entity_indices = set(entity_scores.indices) if hasattr(entity_scores, "indices") else set()
+                node_indices = set(node_scores.indices) if hasattr(node_scores, "indices") else set()
+
+                # Find entities to add back
+                additional_indices = entity_indices - node_indices
+
+                if additional_indices:
+                    # Take up to 20 additional entities
+                    additional_indices = list(additional_indices)[:20]
+
+                    # Give them lower scores
+                    min_score = node_scores.data.min() if node_scores.nnz > 0 else 0.01
+                    additional_data = np.array([0.25 * min_score] * len(additional_indices))
+
+                    # Create arrays for expanded matrix
+                    expanded_indices = np.concatenate([node_scores.indices, additional_indices])
+                    expanded_data = np.concatenate([node_scores.data, additional_data])
+
+                    # Create new expanded score matrix safely
+                    node_scores = csr_matrix(
+                        (
+                            expanded_data,
+                            (np.zeros_like(expanded_indices), expanded_indices),
+                        ),
+                        shape=node_scores.shape,
+                    )
+                    print(f"Enhanced entity set to {node_scores.nnz} entities")
+            except Exception as e:
+                print(f"Error during entity preservation: {e}")
+                # If we hit an error, just continue with the original filtered entities
+                pass
+
+        print(f"CHECKING FOR BIDIRECTIONAL EXPLORATION: entity count = {node_scores.nnz}")
+
+        # If we still have very few entities, try bidirectional graph exploration
+        if node_scores.nnz < 15:
+            print(f"Few entities found ({node_scores.nnz}), applying bidirectional graph exploration")
+
+            # Get the entities we've found so far
+            seed_entities = []
+            for idx in node_scores.indices:
+                entity = await self.graph_storage.get_node_by_index(idx)
+                if entity is not None:
+                    seed_entities.append(idx)
+
+            print(f"Found {len(seed_entities)} seed entities for exploration")
+
+            # Find their neighbors in the graph (1-hop exploration)
+            neighbor_indices = set()
+            for entity_idx in seed_entities:
+                try:
+                    neighbors = await self.graph_storage.get_neighbors(entity_idx, max_distance=1)
+                    print(f"Entity {entity_idx} has {len(neighbors)} neighbors")
+                    neighbor_indices.update(neighbors)
+                except Exception as e:
+                    print(f"Error getting neighbors for entity {entity_idx}: {e}")
+
+            # Remove entities we already have
+            original_indices_set = set(node_scores.indices)
+            neighbor_indices = neighbor_indices - original_indices_set
+
+            print(f"Found {len(neighbor_indices)} new neighbors after removing existing entities")
+
+            if neighbor_indices:
+                # Create scores for these neighbor entities
+                min_score = node_scores.data.min() if len(node_scores.data) > 0 else 0.01
+                neighbor_data = np.array([0.5 * min_score] * len(neighbor_indices))  # Lower scores than original
+                neighbor_indices_array = np.array(list(neighbor_indices))
+                expanded_indices = np.concatenate([node_scores.indices, neighbor_indices_array])
+                expanded_data = np.concatenate([node_scores.data, neighbor_data])
+
+                # Create a new expanded score matrix
+                expanded_scores = csr_matrix(
+                    (
+                        expanded_data,
+                        (np.zeros_like(expanded_indices), expanded_indices),
+                    ),
+                    shape=node_scores.shape,
+                )
+
+                print(f"Expanded from {node_scores.nnz} to {len(expanded_indices)} entities via graph exploration")
+                return expanded_scores
 
         return node_scores
 
@@ -567,13 +787,19 @@ class DefaultStateManagerService(BaseStateManagerService[TEntity, TRelation, THa
             boosted_scores = entity_scores.copy()
             if len(boosted_scores.data) > 0:
                 # Increase weight of top entities
-                top_k = min(3, len(boosted_scores.data))
-                top_indices = np.argsort(-boosted_scores.data)[:top_k]
-                for idx in top_indices:
-                    boosted_scores.data[idx] *= 1.5  # Boost factor
+                entity_types = set()
+                boosted_count = 0
+                for idx in np.argsort(-boosted_scores.data):
+                    entity = await self.graph_storage.get_node_by_index(boosted_scores.indices[idx])
+                    if entity and entity.type not in entity_types:
+                        boosted_scores.data[idx] *= 1.8  # Higher boost for diverse entities
+                        entity_types.add(entity.type)
+                        boosted_count += 1
+                        if boosted_count >= min(5, len(boosted_scores.data)):
+                            break
 
                 entity_scores = boosted_scores
-                print(f"Boosted top {top_k} entity scores to improve relation retrieval")
+                print(f"Boosted top {boosted_count} entity scores to improve relation retrieval")
 
         result = entity_scores.dot(e2r)
         print(
